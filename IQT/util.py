@@ -33,7 +33,7 @@ def apply_normalization(tensors, mask, method='minmax') -> np.ndarray:
 
     :param tensors: The tensor input to apply normalisation to.
     The input variable is modified instead of returning a new variable.
-    :param: mask: The tensor mask that determines which voxels will be normalised.
+    :param mask: The tensor mask that determines which voxels will be normalised.
     :param method: Which normalisation function to apply.
     The options are minmax for min-max, or stdscore for standard score.
     :return: The normalisation metrics which can be used to revert the normalisation.
@@ -45,17 +45,23 @@ def apply_normalization(tensors, mask, method='minmax') -> np.ndarray:
 
         for t in range(6):
 
-            tensor = tensors[..., t]
-            metric = [np.min(tensor[mask]), np.max(tensor[mask])]
-            tensors[..., t] = (tensor - metric[0]) / (metric[1] - metric[0])
-            norm_metrics[t, :] = metric
+            for t in range(tensors.shape[-1]):
+                tensor = tensors[..., t]
+
+                metric = [np.min(tensor[mask]), np.max(tensor[mask])]
+                tensors[..., t] = (tensor - metric[0]) / (metric[1] - metric[0])
+                norm_metrics[t, :] = metric
 
     if method == 'stdscore':
 
-        for t, tensor in enumerate(tensors):
+        for t in range(tensors.shape[-1]):
+            tensor = tensors[..., t]
 
             metric = np.array([np.mean(tensor[mask]), np.std(tensor[mask])])
             tensors[..., t] = (tensor - metric[0]) / (metric[1])
+
+    else:
+        raise ValueError("Only \"minmax\" and \"stdscore\" values are allowed.")
 
     return norm_metrics
 
