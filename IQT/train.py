@@ -10,6 +10,7 @@ from models import simple_generator, vdsr
 
 from tqdm import tqdm
 
+NUM_EPOCHS = 50
 
 # model: keras.Model = simple_generator(input_ch=6, output_ch=6, layer_num=1, ipatch_size=11)
 
@@ -52,18 +53,20 @@ def main():
                                  mode='dti',
                                  normalization_method='stdscore',
                                  subject_labels=['100307', '221319'],
-                                 batch_size=6,
+                                 batch_size=4,
+                                 pairs_per_subject=8000,
                                  ipatch_size=15,
                                  opatch_size=15)
 
     summary_writer = tf.summary.create_file_writer('../logs/run_results')
 
-    (sample_t, sample_i) = train_seq.sample_slice(0, (60, 80, 60))
+    (sample_t, sample_i, sample_t1) = train_seq.sample_slice(0, (60, 60, 60))
 
     with summary_writer.as_default():
         tf.summary.image('Target Slice', sample_t[:, 7, :, 0:1][None, ...], step=0)
+        tf.summary.image('Input T1w Slice', sample_t1[:, sample_t.shape[1]//2, :, :][None, ...] / 1000, step=0)
 
-    for run in range(2):
+    for run in range(NUM_EPOCHS):
 
         train_loss = 0
         val_loss = 0
@@ -72,7 +75,7 @@ def main():
 
         val_size = train_seq.__len__() - train_size
 
-        for batch, (target_batch, input_batch) in enumerate(tqdm(train_seq)):
+        for batch, (target_batch, (input_batch, t1_batch)) in enumerate(tqdm(train_seq)):
 
             if batch <= train_size:
 

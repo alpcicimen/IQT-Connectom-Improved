@@ -1,6 +1,7 @@
 import numpy as np
 import numpy.random as npr
 import tensorflow as tf
+import keras
 import os
 
 from math import ceil
@@ -17,7 +18,7 @@ class DataLoader:
                  subdir='.',
                  mode='dti',
                  file_head='dt_b1000_',
-                 normalization_method='minmax'):
+                 normalization_method: str | None = 'minmax'):
         self.data_dir = data_dir
         self.subdir = subdir
         self.subject_labels = subject_labels
@@ -34,30 +35,62 @@ class DataLoader:
         self.load_data()
 
     def load_data(self):
-        for subject in self.subject_labels:
 
-            subject_data = util.load_dtis(
-                os.path.join(self.data_dir, subject, self.subdir),
-                self.file_head
-            )
+        match self.mode:
 
-            subject_mask = subject_data[..., 0]
+            case "dti":
+                for subject in self.subject_labels:
 
-            self.__subject_masks.append(np.copy(subject_mask))
-            self.__subject_S0_values.append(np.copy(subject_data[..., 1]))
+                    subject_data = util.load_dtis(
+                        os.path.join(self.data_dir, subject, self.subdir),
+                        self.file_head
+                    )
 
-            subject_data = subject_data[..., 2:]
+                    subject_mask = subject_data[..., 0]
 
-            if self.normalization_method is not None:
+                    self.__subject_masks.append(np.copy(subject_mask))
+                    self.__subject_S0_values.append(np.copy(subject_data[..., 1]))
 
-                self.normalization_metrics.append(
-                    util.apply_normalization(subject_data,
-                                             subject_mask == 0,
-                                             self.normalization_method))
+                    subject_data = subject_data[..., 2:]
 
-            self.__subjects.append(subject_data)
+                    if self.normalization_method is not None:
+
+                        self.normalization_metrics.append(
+                            util.apply_normalization(subject_data,
+                                                     subject_mask == 0,
+                                                     self.normalization_method))
+
+                    self.__subjects.append(subject_data)
+
+                return
+
+            case "map":
+                return
+
+            case "T1w":
+
+                self.__subject_masks = None
+                self.__subject_S0_values = None
+
+                for subject in self.subject_labels:
+
+                    subject_data = util.load_structural(
+                        os.path.join(self.data_dir, subject, self.subdir),
+                        self.file_head
+                    )
+
+                    self.__subjects.append(subject_data)
+
+                return
+
+            case _:
+
+                raise TypeError("Unsupported data mode: {}".format(self.mode))
 
     def shape(self, subj):
+
+        if self.mode == 'T1w':
+            return self.__subjects[subj].shape
 
         return self.__subjects[subj].shape[:-1]
 
@@ -116,7 +149,7 @@ class DataLoader:
 
         possible_indices = np.array(np.where(mask)).T
 
-        is_keep = np.zeros((possible_indices.shape[0], 6), dtype=bool)
+        is_keep: np.ndarray[bool] = np.zeros((possible_indices.shape[0], 6), dtype=bool)
 
         is_keep[:, 0] = (possible_indices[:, 0] - patch_size) >= 0
         is_keep[:, 1] = (possible_indices[:, 0] + patch_size) < dims[0]
@@ -133,7 +166,7 @@ class DataLoader:
         return indices
 
 
-class TrainingSequence(tf.keras.utils.Sequence):
+class TrainingSequence(keras.utils.Sequence):
 
     def __init__(self,
                  data_dir,
@@ -141,7 +174,9 @@ class TrainingSequence(tf.keras.utils.Sequence):
                  target_dir,
                  input_dir,
                  mode,
+                 t1_dir = 'T1w',
                  normalization_method='stdscore',
+                 pairs_per_subject=8000,
                  ipatch_size=5,
                  opatch_size=3,
                  batch_size=6):
@@ -150,6 +185,8 @@ class TrainingSequence(tf.keras.utils.Sequence):
         self.ipatch_size = ipatch_size
         self.opatch_size = opatch_size
         self.batch_size = batch_size
+
+        self.pairs_per_subject = pairs_per_subject
 
         self.__target_data: DataLoader = DataLoader(data_dir=data_dir,
                                                     subject_labels=subject_labels,
@@ -164,20 +201,54 @@ class TrainingSequence(tf.keras.utils.Sequence):
                                                    normalization_method=normalization_method,
                                                    file_head='dt_b1000_lowres_4_')
 
-        # valid_indices = self.__find_all_patch_indices__()
+        self.__t1_data: DataLoader = DataLoader(data_dir=data_dir,
+                                                subject_labels=subject_labels,
+                                                subdir=t1_dir,
+                                                mode='T1w',
+                                                normalization_method=None,
+                                                file_head='T1w_acpc_dc_restore_brain'
+                                                )
 
-        self.valid_patch_indices: np.ndarray = self.__find_all_patch_indices__()
+        self.valid_patch_indices: List[np.ndarray] = self.__find_all_patch_indices__()
 
-        npr.shuffle(self.valid_patch_indices)
+        self.__cur_epoch_indices = None
+
+        self.__sel_epoch_indices()
+
+        # npr.shuffle(self.valid_patch_indices)
 
     def sample_slice(self, subj, coords: Tuple[int, int, int]):
 
         i_patch = self.__input_data.get_patch(subj, coords, self.ipatch_size)
         t_patch = self.__target_data.get_patch(subj, coords, self.opatch_size)
 
-        return tf.convert_to_tensor(t_patch), tf.convert_to_tensor(i_patch)
+        t1_coords = (round(coords[0] * 1.25/0.7),
+                     round(coords[1] * 1.25/0.7),
+                     round(coords[2] * 1.25/0.7))  # Will change, placeholder values from existing HCP data
 
-    def __find_all_patch_indices__(self) -> np.ndarray:
+        t1_patch = self.__t1_data.get_patch(subj, t1_coords, round(self.opatch_size * 1.25/0.7))
+
+        return tf.convert_to_tensor(t_patch), tf.convert_to_tensor(i_patch), tf.convert_to_tensor(t1_patch)
+
+    def __sel_epoch_indices(self) -> None:
+
+        cur_epoch_indices = []
+
+        for subj_index in self.valid_patch_indices:
+
+            cur_epoch_indices.append(
+                subj_index[npr.choice(subj_index.shape[0], size=self.pairs_per_subject, replace=False)]
+            )
+
+        cur_epoch_indices = np.concatenate(cur_epoch_indices, axis=0)
+
+        npr.shuffle(cur_epoch_indices)
+
+        self.__cur_epoch_indices = cur_epoch_indices
+
+        return
+
+    def __find_all_patch_indices__(self) -> List[np.ndarray]:
 
         valid_patch_indices = []
 
@@ -192,27 +263,41 @@ class TrainingSequence(tf.keras.utils.Sequence):
                 )
             )
 
-        return np.concatenate(valid_patch_indices, axis=0)
+        return valid_patch_indices
+        # return np.concatenate(valid_patch_indices, axis=0)
 
     def __getitem__(self, index):
 
         target_patches = []
         input_patches = []
+        t1_patches = []
 
-        for (s, i, j, k) in self.valid_patch_indices[index:index + self.batch_size]:
+        # for (s, i, j, k) in self.valid_patch_indices[index:index + self.batch_size]:
+        for (s, i, j, k) in self.__cur_epoch_indices[index:index + self.batch_size]:
 
             target_patch = self.__target_data.get_patch(s, (i, j, k), self.opatch_size)
             input_patch = self.__input_data.get_patch(s, (i, j, k), self.ipatch_size)
 
+            t1_coords = (round(i * 1.25 / 0.7),
+                         round(j * 1.25 / 0.7),
+                         round(k * 1.25 / 0.7))  # Will change, placeholder values from existing HCP data
+
+            t1_patch = self.__t1_data.get_patch(s, t1_coords, round(self.opatch_size * 1.25 / 0.7))
+
             target_patches.append(target_patch)
             input_patches.append(input_patch)
+            t1_patches.append(t1_patch)
 
-        return tf.stack(target_patches), tf.stack(input_patches)
+        return tf.stack(target_patches), (tf.stack(input_patches), tf.stack(t1_patches))
 
     def __len__(self):
-        return ceil(self.valid_patch_indices.shape[0] / self.batch_size)
+        # return ceil(self.valid_patch_indices.shape[0] / self.batch_size)
+
+        return len(self.subject_labels) * self.pairs_per_subject
 
     def on_epoch_end(self):
 
-        npr.shuffle(self.valid_patch_indices)
+        self.__sel_epoch_indices()
+
+        # npr.shuffle(self.valid_patch_indices)
 

@@ -1,6 +1,8 @@
 import tensorflow as tf
 # from tensorflow.keras.layers import *
+
 from keras.layers import *
+from typing import Tuple
 
 import keras.backend as K
 
@@ -86,9 +88,14 @@ def simple_generator(input_ch, output_ch, ipatch_size=11, f_num=50, layer_num=1,
     return tf.keras.Model(input_layer, model(input_layer))
 
 
-def vdsr(ipatch_size=11):
+def vdsr(ipatch_size: int | Tuple[int, int, int]):
 
-    input_layer = tf.keras.layers.Input(shape=[ipatch_size, ipatch_size, ipatch_size, 6], name='input')
+    if type(ipatch_size) is int:
+        (x_size, y_size, z_size) = (ipatch_size, ipatch_size, ipatch_size)
+    else:
+        (x_size, y_size, z_size) = ipatch_size
+
+    input_layer = tf.keras.layers.Input(shape=[x_size, y_size, z_size, 6], name='input')
 
     model = tf.keras.Sequential(layers=[Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
                                         ReLU(),
