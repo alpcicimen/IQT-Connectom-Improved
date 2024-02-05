@@ -69,7 +69,6 @@ class DataLoader:
 
             case "T1w":
 
-                self.__subject_masks = None
                 self.__subject_S0_values = None
 
                 for subject in self.subject_labels:
@@ -78,6 +77,17 @@ class DataLoader:
                         os.path.join(self.data_dir, subject, self.subdir),
                         self.file_head
                     )
+
+                    subject_mask = (subject_data != 0)[...,0]
+
+                    self.__subject_masks.append(subject_mask)
+
+                    if self.normalization_method is not None:
+
+                        self.normalization_metrics.append(
+                            util.apply_normalization(subject_data,
+                                                     subject_mask,
+                                                     self.normalization_method))
 
                     self.__subjects.append(subject_data)
 
@@ -120,7 +130,8 @@ class DataLoader:
     def get_grid_indices(self,
                          subj: int,
                          ipatch_size=5,
-                         opatch_size=3) -> List[Tuple[int, int, int]]:
+                         opatch_size=3,
+                         overlap=0) -> List[Tuple[int, int, int]]:
 
         subj_img = self.__subjects[subj]
 
@@ -129,13 +140,13 @@ class DataLoader:
         recon_indx = [(i, j, k)
                       for k in np.arange(ipatch_size + 1,
                                          zsize - ipatch_size + 1,
-                                         2 * opatch_size + 1)
+                                         2 * opatch_size + 1 - overlap)
                       for j in np.arange(ipatch_size + 1,
                                          ysize - ipatch_size + 1,
-                                         2 * opatch_size + 1)
+                                         2 * opatch_size + 1 - overlap)
                       for i in np.arange(ipatch_size + 1,
                                          xsize - ipatch_size + 1,
-                                         2 * opatch_size + 1)]
+                                         2 * opatch_size + 1 - overlap)]
 
         return recon_indx
 
@@ -185,14 +196,17 @@ class TrainingSequence(keras.utils.Sequence):
         self.ipatch_size = ipatch_size
         self.opatch_size = opatch_size
         self.batch_size = batch_size
-
         self.pairs_per_subject = pairs_per_subject
+
+        self.__no_batches = ceil(len(self.subject_labels) * self.pairs_per_subject / self.batch_size)
 
         self.__target_data: DataLoader = DataLoader(data_dir=data_dir,
                                                     subject_labels=subject_labels,
                                                     subdir=target_dir,
                                                     mode=mode,
                                                     normalization_method=normalization_method)
+
+        print("Loaded target data.")
 
         self.__input_data: DataLoader = DataLoader(data_dir=data_dir,
                                                    subject_labels=subject_labels,
@@ -201,19 +215,22 @@ class TrainingSequence(keras.utils.Sequence):
                                                    normalization_method=normalization_method,
                                                    file_head='dt_b1000_lowres_4_')
 
+        print("Loaded low-res input data.")
+
         self.__t1_data: DataLoader = DataLoader(data_dir=data_dir,
                                                 subject_labels=subject_labels,
                                                 subdir=t1_dir,
                                                 mode='T1w',
-                                                normalization_method=None,
-                                                file_head='T1w_acpc_dc_restore_brain'
-                                                )
+                                                normalization_method=normalization_method,
+                                                file_head='T1w_acpc_dc_restore_brain')
+
+        print("Loaded structural input data.")
 
         self.valid_patch_indices: List[np.ndarray] = self.__find_all_patch_indices__()
 
         self.__cur_epoch_indices = None
 
-        self.__sel_epoch_indices()
+        self.__sel_epoch_indices__()
 
         # npr.shuffle(self.valid_patch_indices)
 
@@ -226,11 +243,11 @@ class TrainingSequence(keras.utils.Sequence):
                      round(coords[1] * 1.25/0.7),
                      round(coords[2] * 1.25/0.7))  # Will change, placeholder values from existing HCP data
 
-        t1_patch = self.__t1_data.get_patch(subj, t1_coords, round(self.opatch_size * 1.25/0.7))
+        t1_patch = self.__t1_data.get_patch(subj, t1_coords, self.opatch_size * 2)# round(self.opatch_size * 1.25/0.7))
 
         return tf.convert_to_tensor(t_patch), tf.convert_to_tensor(i_patch), tf.convert_to_tensor(t1_patch)
 
-    def __sel_epoch_indices(self) -> None:
+    def __sel_epoch_indices__(self) -> None:
 
         cur_epoch_indices = []
 
@@ -273,7 +290,7 @@ class TrainingSequence(keras.utils.Sequence):
         t1_patches = []
 
         # for (s, i, j, k) in self.valid_patch_indices[index:index + self.batch_size]:
-        for (s, i, j, k) in self.__cur_epoch_indices[index:index + self.batch_size]:
+        for (s, i, j, k) in self.__cur_epoch_indices[index:min(index + self.batch_size, self.__no_batches)]:
 
             target_patch = self.__target_data.get_patch(s, (i, j, k), self.opatch_size)
             input_patch = self.__input_data.get_patch(s, (i, j, k), self.ipatch_size)
@@ -282,7 +299,7 @@ class TrainingSequence(keras.utils.Sequence):
                          round(j * 1.25 / 0.7),
                          round(k * 1.25 / 0.7))  # Will change, placeholder values from existing HCP data
 
-            t1_patch = self.__t1_data.get_patch(s, t1_coords, round(self.opatch_size * 1.25 / 0.7))
+            t1_patch = self.__t1_data.get_patch(s, t1_coords, self.opatch_size * 2)# round(self.opatch_size * 1.25 / 0.7))
 
             target_patches.append(target_patch)
             input_patches.append(input_patch)
@@ -293,11 +310,11 @@ class TrainingSequence(keras.utils.Sequence):
     def __len__(self):
         # return ceil(self.valid_patch_indices.shape[0] / self.batch_size)
 
-        return len(self.subject_labels) * self.pairs_per_subject
+        return self.__no_batches
 
     def on_epoch_end(self):
 
-        self.__sel_epoch_indices()
+        self.__sel_epoch_indices__()
 
         # npr.shuffle(self.valid_patch_indices)
 

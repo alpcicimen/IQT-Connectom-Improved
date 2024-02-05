@@ -61,18 +61,7 @@ def apply_normalization(tensors, mask: np.ndarray[bool], method='minmax') -> np.
     :return: The normalisation metrics which can be used to revert the normalisation.
     """
 
-    norm_metrics = np.zeros((6, 2))
-
-    # if method == 'minmax':
-    #
-    #     for t in range(tensors.shape[-1]):
-    #         tensor = tensors[..., t]
-    #
-    #         metric = [np.min(tensor[mask]), np.max(tensor[mask])]
-    #         tensors[..., t] = (tensor - metric[0]) / (metric[1] - metric[0])
-    #         norm_metrics[t, :] = metric
-
-    # if method == 'stdscore':
+    norm_metrics = np.zeros((tensors.shape[-1], 2))
 
     for t in range(tensors.shape[-1]):
         tensor = tensors[..., t]
@@ -83,9 +72,13 @@ def apply_normalization(tensors, mask: np.ndarray[bool], method='minmax') -> np.
                 metric = np.array([np.min(tensor[mask]), np.max(tensor[mask])])
                 tensors[..., t] = (tensor - metric[0]) / (metric[1] - metric[0])
 
+                tensors[~mask, :] = 0
+
             case "stdscore":
                 metric = np.array([np.mean(tensor[mask]), np.std(tensor[mask])])
                 tensors[..., t] = (tensor - metric[0]) / (metric[1])
+
+                tensors[~mask, :] = 0
 
             case _:
                 raise ValueError("Only \"minmax\" and \"stdscore\" values are allowed.")
@@ -99,7 +92,6 @@ def apply_normalization(tensors, mask: np.ndarray[bool], method='minmax') -> np.
 
 def revert_normalization(tensors, mask, norm_metrics, method='minmax') -> None:
     norm_metrics = np.zeros((6, 2))
-
 
     for t in range(tensors.shape[-1]):
 

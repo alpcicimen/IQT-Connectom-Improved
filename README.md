@@ -2,7 +2,8 @@
 
 ## Installation Instructions
 
-To be able to run IQT with Connectom Python 3.11 is required. We recommend a Conda installation.
+To be able to run IQT with Connectom Python 3.11 is recommended, but Python 3.10 can be used as well.
+We recommend a Conda installation.
 
 To install the dependencies, run
 
