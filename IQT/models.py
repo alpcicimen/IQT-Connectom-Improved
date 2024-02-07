@@ -6,7 +6,19 @@ from typing import Tuple
 
 import keras.backend as K
 
-from IQT.layers import *
+from layers import *
+
+
+def config_model(args):
+
+    match args.model:
+
+        case "UNet-T1":
+
+            return unet3d_t1(args.patch_size, args.t1_patch_size)
+
+        case _:
+            raise ValueError(f"No model configuration for \"{args.model}\" found!")
 
 
 class DepthToSpaceLayer(Layer):
@@ -67,9 +79,9 @@ class SpaceToDepthLayer(Layer):
 
 
 def simple_generator(input_ch, output_ch, ipatch_size=11, f_num=50, layer_num=1, ds=2):
-    input_layer = tf.keras.layers.Input(shape=[ipatch_size, ipatch_size, ipatch_size, input_ch], name='input')
+    input_layer = Input(shape=[ipatch_size, ipatch_size, ipatch_size, input_ch], name='input')
 
-    model = tf.keras.Sequential()
+    model = Sequential()
 
     model.add(Conv3D(kernel_size=(3, 3, 3), filters=f_num, padding='valid'))
     model.add(ReLU())
@@ -96,19 +108,19 @@ def vdsr(ipatch_size: int | Tuple[int, int, int]):
     else:
         (x_size, y_size, z_size) = ipatch_size
 
-    input_layer = tf.keras.layers.Input(shape=[x_size, y_size, z_size, 6], name='input')
+    input_layer = Input(shape=[x_size, y_size, z_size, 6], name='input')
 
-    model = tf.keras.Sequential(layers=[Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                                        ReLU(),
-                                        Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                                        ReLU(),
-                                        Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                                        ReLU(),
-                                        Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                                        ReLU(),
-                                        Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                                        ReLU(),
-                                        Conv3D(kernel_size=(3, 3, 3), filters=6, padding='same')])
+    model = Sequential(layers=[Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
+                               ReLU(),
+                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
+                               ReLU(),
+                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
+                               ReLU(),
+                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
+                               ReLU(),
+                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
+                               ReLU(),
+                               Conv3D(kernel_size=(3, 3, 3), filters=6, padding='same')])
 
     output = input_layer + model(input_layer)
 
@@ -126,23 +138,23 @@ def vdsr_t1(ipatch_size: int | Tuple[int, int, int],
     else:
         (x_size, y_size, z_size) = ipatch_size
 
-    input_layer = keras.layers.Input(shape=[x_size, y_size, z_size, 6], name='input')
+    input_layer = Input(shape=[x_size, y_size, z_size, 6], name='input')
 
-    t1_layer = keras.layers.Input(shape=[t1_patch_size, t1_patch_size, t1_patch_size, 1], name='t1_input')
+    t1_layer = Input(shape=[t1_patch_size, t1_patch_size, t1_patch_size, 1], name='t1_input')
 
-    model = keras.Sequential(layers=[Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                                     ReLU(),
-                                     Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                                     ReLU(),
-                                     Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                                     ReLU(),
-                                     Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                                     ReLU(),
-                                     Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                                     ReLU(),
-                                     Conv3D(kernel_size=(3, 3, 3), filters=6, padding='same')])
+    model = Sequential(layers=[Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
+                               ReLU(),
+                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
+                               ReLU(),
+                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
+                               ReLU(),
+                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
+                               ReLU(),
+                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
+                               ReLU(),
+                               Conv3D(kernel_size=(3, 3, 3), filters=6, padding='same')])
 
-    model_t1 = keras.Sequential()
+    model_t1 = Sequential()
 
     ksize = 5
 
@@ -151,24 +163,25 @@ def vdsr_t1(ipatch_size: int | Tuple[int, int, int],
     while t1_size > ipatch_size:
         fsize = 64 if calc_output(t1_size, filter_size=ksize) > ipatch_size else 6
 
-        model_t1.add(keras.Sequential([
+        model_t1.add(Sequential([
             Conv3D(kernel_size=ksize, filters=fsize, padding='valid'),
             ReLU()]))
         t1_size = calc_output(t1_size, filter_size=ksize)
 
     output = input_layer + model(input_layer) + model_t1(t1_layer)
 
-    return tf.keras.Model([input_layer, t1_layer], output)
+    return keras.Model([input_layer, t1_layer], output)
 
 
 def unet3d(ipatch_size):
-    i_layer = keras.layers.Input(shape=[ipatch_size,
-                                        ipatch_size,
-                                        ipatch_size, 6], name='input')
 
-    t1_layer = keras.layers.Input(shape=[ipatch_size * 2,
-                                         ipatch_size * 2,
-                                         ipatch_size * 2, 1], name='input_t1')
+    i_layer = Input(shape=[ipatch_size,
+                           ipatch_size,
+                           ipatch_size, 6], name='input')
+
+    t1_layer = Input(shape=[ipatch_size * 2,
+                            ipatch_size * 2,
+                            ipatch_size * 2, 1], name='input_t1')
 
     conv_input = Sequential([Conv3D(kernel_size=5, filters=6*4, padding='same'),
                              ReLU(),
@@ -186,29 +199,32 @@ def unet3d(ipatch_size):
     return keras.Model([i_layer, t1_layer], o_layer)
 
 
-def unet3d_t1(ipatch_size):
+def unet3d_t1(ipatch_size,
+              tw_patch_size=None):
+
     i_layer = keras.layers.Input(shape=[ipatch_size,
                                         ipatch_size,
                                         ipatch_size, 6], name='input')
 
-    t1_layer = keras.layers.Input(shape=[ipatch_size * 2,
-                                         ipatch_size * 2,
-                                         ipatch_size * 2, 1], name='input_t1')
+    __tw_patch_size = 2 * ipatch_size if tw_patch_size is None else tw_patch_size
+
+    t1_layer = keras.layers.Input(shape=[__tw_patch_size,
+                                         __tw_patch_size,
+                                         __tw_patch_size, 1], name='input_t1')
 
     conv_input = Sequential([Conv3D(kernel_size=5, filters=6*4, padding='same'),
                              ReLU(),
                              Conv3D(kernel_size=5, filters=6*4, padding='same'),
                              ReLU()])(i_layer)
 
-    t1_input = Sequential([Conv3D(kernel_size=5, strides=2, filters=6*4, padding='same'),
-                           ReLU(),
-                           Conv3D(kernel_size=5, filters=6*4, padding='same'),
+    t1_input = Sequential([Conv3D(kernel_size=5,
+                                  strides=(2 if tw_patch_size is None else 1),  # Do not apply stride on custom T1 sizes
+                                  filters=6*4, padding='same'),
                            ReLU(),
                            Conv3D(kernel_size=5, filters=6*4, padding='same'),
                            ReLU()])(t1_layer)
 
     t1_d_layer1 = unet_downsample_layer(t1_input, kernel_size=5, filter_size=6 * 4 * 4)
-    # t1_d_layer2 = unet_downsample_layer(t1_d_layer1, kernel_size=5, filter_size=6 * 4 * 4 * 4)
 
     d_layer1 = unet_downsample_layer(conv_input, kernel_size=5, filter_size=6 * 4 * 4)
     d_layer2 = unet_downsample_layer(d_layer1, kernel_size=5, filter_size=6 * 4 * 4 * 4)
@@ -218,6 +234,6 @@ def unet3d_t1(ipatch_size):
     u_layer2 = unet_upsample_layer(u_layer1,
                                    concat_layer=(t1_input+conv_input), filter_size=6 * 4, kernel_size=5)
 
-    o_layer = Conv3D(kernel_size=5, filters=6, padding='same')(u_layer2)
+    o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.experimental.numpy.float64)(u_layer2)
 
     return keras.Model([i_layer, t1_layer], o_layer)

@@ -15,7 +15,8 @@ def load_dtis(directory: str,
         elif os.path.exists(os.path.join(directory, f"{file_head}{i}.nii.gz")):
             subj = np.array(nib.load(os.path.join(directory, f"{file_head}{i}.nii.gz")).dataobj)
         else:
-            raise FileNotFoundError("No such files in directory.")
+            raise FileNotFoundError("No such files in directory: \'{}\'"
+                                    .format(os.path.join(directory, f"{file_head}{i}.nii")))
 
         subject_dts.append(subj)
 
@@ -43,7 +44,8 @@ def load_structural(directory: str,
             nib.load(os.path.join(directory, f"{file_head}.nii.gz")).dataobj
         )[..., None]  # For channels in NN. Data format is [X, Y, Z, C]
     else:
-        raise FileNotFoundError("No such files in directory.")
+        raise FileNotFoundError("No such files in directory: \"{}\""
+                                .format(os.path.join(directory, f"{file_head}.nii.gz")))
 
     return subj
 
@@ -91,7 +93,6 @@ def apply_normalization(tensors, mask: np.ndarray[bool], method='minmax') -> np.
 
 
 def revert_normalization(tensors, mask, norm_metrics, method='minmax') -> None:
-    norm_metrics = np.zeros((6, 2))
 
     for t in range(tensors.shape[-1]):
 
