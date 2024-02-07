@@ -31,7 +31,7 @@ class PairLoader:
         for subject_label in subject_labels:
 
             if not os.path.exists(os.path.join(pairs_dir, subject_label)):
-                os.mkdir(os.path.join(pairs_dir, subject_label))
+                os.makedirs(os.path.join(pairs_dir, subject_label))
 
             # subject_data_lr = util.load_dtis(
             #     os.path.join(diff_data_dir, subject_label),
