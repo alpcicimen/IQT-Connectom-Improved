@@ -8,45 +8,54 @@ from math import ceil
 from random import randint, choices
 from typing import List, Tuple
 
-from IQT import util
+from tqdm import tqdm
+
+import util
 
 from scipy.ndimage import zoom
 
 
-class PairLoader:
+class PairSequence(keras.utils.Sequence):
 
-    def __init__(self,
-                 diff_data_dir,
-                 t1_data_dir,
-                 subject_labels,
-                 pairs_dir,
-                 lr_filedir=os.path.join('LR', 'dt_b1000_lowres_2_'),
-                 upsampling_rate=1.25/.7,
-                 hr_filedir=os.path.join('HR', 'dt_b1000_'),
-                 t1_filedir=os.path.join('T1w', 'T1w_acpc_dc_restore_brain'),
-                 mode='dti',
-                 patch_spacing=8,
-                 patch_size=16):
+    @staticmethod
+    def generate_data(diff_data_dir,
+                      t1_data_dir,
+                      subject_labels,
+                      pairs_dir,
+                      upsampling_rate=1.25 / .7,
+                      hr_filedir=os.path.join('HR', 'dt_b1000_'),
+                      t1_filedir=os.path.join('T1w', 'T1w_acpc_dc_restore_brain'),
+                      mode='dti',
+                      normalization_method='stdscore',
+                      patch_spacing=8,
+                      patch_size=16,
+                      cluster_mode=False):
+
+        match mode:
+
+            case 'dti':
+                loader_func = util.load_dtis
+
+            case 'map':
+                loader_func = util.load_maps
+
+            case _:
+                raise TypeError("Unsupported data mode: {}".format(mode))
 
         for subject_label in subject_labels:
 
             if not os.path.exists(os.path.join(pairs_dir, subject_label)):
                 os.makedirs(os.path.join(pairs_dir, subject_label))
 
-            # subject_data_lr = util.load_dtis(
-            #     os.path.join(diff_data_dir, subject_label),
-            #     lr_filedir
-            # )[..., 2:]
-
-            subject_data_hr = util.load_dtis(
+            subject_data_hr = loader_func(
                 os.path.join(diff_data_dir, subject_label),
                 hr_filedir
             )
 
             subject_data_lr = zoom(subject_data_hr[..., 2:],
-                                   zoom=(1./upsampling_rate,
-                                         1./upsampling_rate,
-                                         1./upsampling_rate, 1))
+                                   zoom=(1. / upsampling_rate,
+                                         1. / upsampling_rate,
+                                         1. / upsampling_rate, 1))
 
             lr_dims = (np.array(subject_data_hr.shape[:-1] + (1,)) /
                        np.array(subject_data_lr.shape[:-1] + (1,)))
@@ -66,9 +75,20 @@ class PairLoader:
 
             subject_data_t1 = zoom(subject_data_t1, target_scales)
 
-            util.apply_normalization(subject_data_lr, mask, method='stdscore')
-            util.apply_normalization(subject_data_hr, mask, method='stdscore')
-            util.apply_normalization(subject_data_t1, mask, method='stdscore')
+            util.apply_normalization(subject_data_lr, mask, method=normalization_method)
+            util.apply_normalization(subject_data_hr, mask, method=normalization_method)
+            util.apply_normalization(subject_data_t1, mask, method=normalization_method)
+
+            subject_data_lr = np.pad(subject_data_lr,
+                                     pad_width=np.array([[8, 8], [8, 8], [8, 8], [0, 0]]), mode='edge')
+
+            subject_data_hr = np.pad(subject_data_hr,
+                                     pad_width=np.array([[8, 8], [8, 8], [8, 8], [0, 0]]), mode='edge')
+
+            subject_data_t1 = np.pad(subject_data_t1,
+                                     pad_width=np.array([[8, 8], [8, 8], [8, 8], [0, 0]]), mode='edge')
+
+            mask = np.pad(mask, pad_width=np.array([[8, 8], [8, 8], [8, 8]]), mode='edge')
 
             sel_mask_indices = np.zeros(mask.shape, dtype=bool)
 
@@ -78,25 +98,24 @@ class PairLoader:
 
             sel_mask_indices = np.array(np.where(sel_mask_indices & mask)).T
 
-            for s, (i, j, k) in enumerate(sel_mask_indices):
-
+            for s, (i, j, k) in enumerate(tqdm(sel_mask_indices, disable=cluster_mode)):
                 comb_patch = np.concatenate([
-                    subject_data_hr[i-patch_size//2:i+round(patch_size/2),
-                                    j-patch_size//2:j+round(patch_size/2),
-                                    k-patch_size//2:k+round(patch_size/2), :],
-                    subject_data_lr[i-patch_size//2:i+round(patch_size/2),
-                                    j-patch_size//2:j+round(patch_size/2),
-                                    k-patch_size//2:k+round(patch_size/2), :],
-                    subject_data_t1[i-patch_size//2:i+round(patch_size/2),
-                                    j-patch_size//2:j+round(patch_size/2),
-                                    k-patch_size//2:k+round(patch_size/2), :],
+                    subject_data_hr[i - patch_size // 2:i + round(patch_size / 2),
+                                    j - patch_size // 2:j + round(patch_size / 2),
+                                    k - patch_size // 2:k + round(patch_size / 2), :],
+                    subject_data_lr[i - patch_size // 2:i + round(patch_size / 2),
+                                    j - patch_size // 2:j + round(patch_size / 2),
+                                    k - patch_size // 2:k + round(patch_size / 2), :],
+                    subject_data_t1[i - patch_size // 2:i + round(patch_size / 2),
+                                    j - patch_size // 2:j + round(patch_size / 2),
+                                    k - patch_size // 2:k + round(patch_size / 2), :],
                 ], axis=-1)
+
+                if 0 in comb_patch.shape:
+                    raise ValueError(f"Array dimension contains zeroes, at index {(i, j, k)}")
 
                 with open(os.path.join(pairs_dir, subject_label, f'{s}.npy'), 'wb') as f:
                     np.save(f, comb_patch, allow_pickle=False)
-
-
-class PairSequence(keras.utils.Sequence):
 
     def __init__(self,
                  pair_dir,
@@ -120,7 +139,6 @@ class PairSequence(keras.utils.Sequence):
         run_indices = []
 
         for subj in self.subject_labels:
-
             patch_indices: np.ndarray[str] = np.stack((np.repeat(subj, self.pairs_per_subject),
                                                        choices(os.listdir(os.path.join(self.pair_dir, subj)),
                                                                k=self.pairs_per_subject)), dtype=str, axis=-1)
@@ -139,8 +157,7 @@ class PairSequence(keras.utils.Sequence):
         input_patches = []
         t1_patches = []
 
-        for (subj, patch_indx) in self.__run_indices[index:min(self.__total_patches, index+self.batch_size)]:
-
+        for (subj, patch_indx) in self.__run_indices[index:min(self.__total_patches, index + self.batch_size)]:
             patch = np.load(os.path.join(self.pair_dir, subj, patch_indx))
 
             hr_lim = (patch.shape[-1] - 1) // 2
@@ -488,4 +505,3 @@ class TrainingSequence(keras.utils.Sequence):
 #     patch = seq[5]
 #
 #     pass
-

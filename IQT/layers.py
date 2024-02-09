@@ -1,9 +1,64 @@
-import keras
-
-import tensorflow as tf
+import keras.backend as K
 
 from keras.layers import *
 from keras import Sequential
+
+
+class DepthToSpaceLayer(Layer):
+
+    def __init__(self, upsampling_rate=2):
+        super().__init__()
+        self.upsampling_rate = upsampling_rate
+
+    def call(self, inputs, *args, **kwargs):
+        batch_size, dim_i, dim_j, dim_k, c = K.int_shape(inputs)
+
+        assert (c % (self.upsampling_rate ** 3) == 0) and (c > 0)  # Number must be exactly divisible by 8
+
+        if batch_size is None:
+            batch_size = -1
+
+        dim_i_r = dim_i * self.upsampling_rate
+        dim_j_r = dim_j * self.upsampling_rate
+        dim_k_r = dim_k * self.upsampling_rate
+
+        oc = c // (self.upsampling_rate ** 3)
+
+        out = K.reshape(inputs, (
+            batch_size, dim_i, dim_j, dim_k, self.upsampling_rate, self.upsampling_rate, self.upsampling_rate, oc))
+        out = K.permute_dimensions(out, (0, 1, 4, 2, 5, 3, 6, 7))
+        out = K.reshape(out, (batch_size, dim_i_r, dim_j_r, dim_k_r, oc))
+        return out
+
+
+class SpaceToDepthLayer(Layer):
+
+    def __init__(self, upsampling_rate=2):
+        super().__init__()
+        self.upsampling_rate = upsampling_rate
+
+    def call(self, inputs, *args, **kwargs):
+        batch_size, dim_i, dim_j, dim_k, c = K.int_shape(inputs)
+
+        assert (dim_i % self.upsampling_rate == 0)  # Number must be exactly divisible by 8
+        assert (dim_j % self.upsampling_rate == 0)  # Number must be exactly divisible by 8
+        assert (dim_k % self.upsampling_rate == 0)  # Number must be exactly divisible by 8
+
+        if batch_size is None:
+            batch_size = -1
+
+        dim_i_r = dim_i // self.upsampling_rate
+        dim_j_r = dim_j // self.upsampling_rate
+        dim_k_r = dim_k // self.upsampling_rate
+
+        oc = c * (self.upsampling_rate ** 3)
+
+        out = K.reshape(inputs, (batch_size, dim_i_r, self.upsampling_rate,
+                                 dim_j_r, self.upsampling_rate,
+                                 dim_k_r, self.upsampling_rate, c))
+        out = K.permute_dimensions(out, (0, 1, 3, 5, 2, 4, 6, 7))
+        out = K.reshape(out, (batch_size, dim_i_r, dim_j_r, dim_k_r, oc))
+        return out
 
 
 def unet_downsample_layer(prev_layer,
@@ -36,11 +91,17 @@ def unet_upsample_layer(prev_layer,
                         kernel_size=3,
                         rep_layers=2):
 
-    layer = Sequential([Conv3DTranspose(filters=filter_size,
-                                        kernel_size=kernel_size*2,
-                                        strides=2,
-                                        padding="same"),
-                       ReLU()])
+    # layer = Sequential([Conv3DTranspose(filters=filter_size,
+    #                                     kernel_size=kernel_size*2,
+    #                                     strides=2,
+    #                                     padding="same"),
+    #                    ReLU()])
+
+    layer = Sequential([DepthToSpaceLayer(upsampling_rate=2),
+                        Conv3D(filters=filter_size,
+                               kernel_size=kernel_size*2,
+                               padding="same"),
+                        ReLU()])
 
     conv = layer(prev_layer)
 
