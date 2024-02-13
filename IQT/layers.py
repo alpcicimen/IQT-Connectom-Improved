@@ -1,4 +1,5 @@
 import keras.backend as K
+import tensorflow as tf
 
 from keras.layers import *
 from keras import Sequential
@@ -77,7 +78,7 @@ def unet_downsample_layer(prev_layer,
     for _ in range(rep_layers):
         conv.add(Sequential([
             Conv3D(filters=filter_size,
-                   kernel_size=kernel_size,
+                   kernel_size=3,
                    padding="same"),
             ReLU()
         ]))
@@ -113,7 +114,7 @@ def unet_upsample_layer(prev_layer,
     for _ in range(rep_layers):
         layer.add(Sequential([
             Conv3D(filters=filter_size,
-                   kernel_size=kernel_size,
+                   kernel_size=3,
                    padding="same"),
             ReLU()
         ]))

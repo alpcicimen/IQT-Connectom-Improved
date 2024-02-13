@@ -4,6 +4,8 @@ import numpy as np
 import nibabel as nib
 import os
 
+from tqdm import tqdm
+
 
 def load_dtis(directory: str,
               file_head: str) -> np.ndarray:
@@ -27,7 +29,21 @@ def load_dtis(directory: str,
 def load_maps(directory: str,
               file_head: str) -> np.ndarray:
 
-    raise NotImplementedError("Not implemented yet!")
+    subject_propagators = []
+
+    for i in range(1, 23):
+        if os.path.exists(os.path.join(directory, f"{file_head}{i}.nii")):
+            prop = np.array(nib.load(os.path.join(directory, f"{file_head}{i}.nii")).dataobj)
+        elif os.path.exists(os.path.join(directory, f"{file_head}{i}.nii.gz")):
+            prop = np.array(nib.load(os.path.join(directory, f"{file_head}{i}.nii.gz")).dataobj)
+        else:
+            raise FileNotFoundError("No such files in directory: \'{}\'"
+                                    .format(os.path.join(directory, f"{file_head}{i}.nii")))
+
+        subject_propagators.append(prop)
+
+    merged_maps = np.stack(subject_propagators, axis=-1)
+    return merged_maps
 
 
 def load_structural(directory: str,
@@ -48,6 +64,25 @@ def load_structural(directory: str,
                                 .format(os.path.join(directory, f"{file_head}.nii.gz")))
 
     return subj
+
+
+def save_dtis(tensors: np.ndarray,
+              save_file_loc: str,
+              reference_header_dir: str,
+              dti_file_start='dt_b1000_recon_') -> None:
+
+    if os.path.exists(f"{reference_header_dir}.nii"):
+        reference_file = nib.load(f"{reference_header_dir}.nii")
+    elif os.path.exists(f"{reference_header_dir}.nii.gz"):
+        reference_file = nib.load(f"{reference_header_dir}.nii.gz")
+    else:
+        raise FileNotFoundError("No such file in directory: \"{}\"".format(f"{reference_header_dir}.nii.gz"))
+
+    reference_header = reference_file.header
+
+    for t in range(tensors.shape[-1]):
+        nib.save(nib.Nifti1Image(tensors[..., t], None, reference_header),
+                 os.path.join(save_file_loc, f"{dti_file_start}{t+2}"))
 
 
 def apply_normalization(tensors, mask: np.ndarray[bool], method='minmax') -> np.ndarray:
@@ -110,7 +145,40 @@ def revert_normalization(tensors, mask, norm_metrics, method='minmax') -> None:
             case _:
                 raise ValueError("Only \"minmax\" and \"stdscore\" values are allowed.")
 
-    tensors[mask == False, :] = 0
+    tensors[~mask, :] = 0
+
+
+def apply_clipped_normalization(tensors, mask, method=None, deviations: int = 2) -> np.ndarray | None:
+    """
+    Applies standard score normalization, and clips the values to the specific std range.
+    Depending on the modality the returned value either has the normalization or returned with the original range.
+
+    :param tensors: Input tensors to normalize
+    :param mask: Mask regions to determine valid voxels
+    :param method: Which normalized method to return the value as. \"stdscore\" returns the values as std score,
+        \"minmax\" returns the values as min-max normalized, and everything else returns the original range.
+
+    :param deviations: Number of standard deviations the values will be clipped to.
+        Negative values are treated as absolute.
+
+    :return: Normalization metrics if method is valid, otherwise None
+    """
+
+    metrics = apply_normalization(tensors, mask, 'stdscore')
+    tensors[...] = np.clip(tensors, -abs(deviations), abs(deviations), dtype=float)
+
+    match method:
+
+        case 'stdscore':
+            return metrics
+
+        case 'minmax':
+            revert_normalization(tensors, mask, metrics, 'stdscore')
+            return apply_normalization(tensors, mask, 'minmax')
+
+        case _:
+            revert_normalization(tensors, mask, metrics, 'stdscore')
+            return None
 
 
 def md_fa_cfa(tensors, mask) -> Tuple[np.ndarray[float], np.ndarray[float], np.ndarray[float]]:
@@ -119,8 +187,30 @@ def md_fa_cfa(tensors, mask) -> Tuple[np.ndarray[float], np.ndarray[float], np.n
     the tensor data. The non-masked regions are not evaluated.
 
     :param tensors: Tensor values to evaluate MD, FA and CFA from
-    :param mask: The mask
-    :return:
+    :param mask: The mask for which voxels have to be calculated for
+    :return: The calculated MD, FA and CFA maps as Numpy arrays
     """
 
-    raise NotImplementedError("Not implemented yet!")
+    md = np.zeros(tensors.shape[:-1])
+    fa = np.zeros(tensors.shape[:-1])
+    cfa = np.zeros(tensors.shape[:-1] + (3,))
+
+    (x_shape, y_shape, z_shape, _) = tensors.shape
+
+    for i in tqdm(range(x_shape)):
+        for j in range(y_shape):
+            for k in range(z_shape):
+                if mask[i, j, k]:
+                    ldt = tensors[i, j, k, :]
+                    ldt = np.array([[ldt[0], ldt[1], ldt[2]],
+                                    [ldt[1], ldt[3], ldt[4]],
+                                    [ldt[2], ldt[4], ldt[5]]])
+
+                    eig_vals, eig_vecs = np.linalg.eigh(ldt)
+
+                    md[i, j, k] = np.mean(eig_vals)
+
+                    fa[i, j, k] = np.sqrt(1.5 * np.sum((eig_vals - eig_vals.mean()) ** 2) / np.sum(eig_vals ** 2))
+                    cfa[i, j, k, :] = fa[i, j, k] * np.abs(eig_vecs[:, eig_vals.argmax()])
+
+    return md, fa, cfa

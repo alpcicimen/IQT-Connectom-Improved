@@ -144,24 +144,24 @@ def unet3d_t1(ipatch_size,
 
     i_layer = keras.layers.Input(shape=[ipatch_size,
                                         ipatch_size,
-                                        ipatch_size, 6], name='input')
+                                        ipatch_size, 6], name='input', dtype=tf.float32)
 
     __tw_patch_size = 2 * ipatch_size if tw_patch_size is None else tw_patch_size
 
     t1_layer = keras.layers.Input(shape=[__tw_patch_size,
                                          __tw_patch_size,
-                                         __tw_patch_size, 1], name='input_t1')
+                                         __tw_patch_size, 1], name='input_t1', dtype=tf.float32)
 
-    conv_input = Sequential([Conv3D(kernel_size=5, filters=6*8, padding='same'),
+    conv_input = Sequential([Conv3D(kernel_size=5, filters=6 * 8, padding='same'),
                              ReLU(),
-                             Conv3D(kernel_size=5, filters=6*8, padding='same'),
+                             Conv3D(kernel_size=5, filters=6 * 8, padding='same'),
                              ReLU()])(i_layer)
 
     t1_input = Sequential([Conv3D(kernel_size=5,
                                   strides=(2 if tw_patch_size is None else 1),  # Do not apply stride on custom T1 sizes
-                                  filters=6*8, padding='same'),
+                                  filters=6 * 8, padding='same'),
                            ReLU(),
-                           Conv3D(kernel_size=5, filters=6*8, padding='same'),
+                           Conv3D(kernel_size=5, filters=6 * 8, padding='same'),
                            ReLU()])(t1_layer)
 
     t1_d_layer1 = unet_downsample_layer(t1_input, kernel_size=5, filter_size=6 * 8 * 8)
@@ -170,17 +170,17 @@ def unet3d_t1(ipatch_size,
     d_layer1 = unet_downsample_layer(conv_input, kernel_size=5, filter_size=6 * 8 * 8)
     d_layer2 = unet_downsample_layer(d_layer1, kernel_size=5, filter_size=6 * 8 * 8 * 8)
 
-    d_layer_n = Conv3D(kernel_size=3, filters=6*8*8, padding='same')(t1_d_layer2 + d_layer2)
+    d_layer_n = Conv3D(kernel_size=3, filters=6 * 8 * 8 * 8, padding='same')(t1_d_layer2 + d_layer2)
 
     u_layer1 = unet_upsample_layer(d_layer_n,
-                                   concat_layer=Conv3D(kernel_size=3, filters=6*8*8, padding='same')
+                                   concat_layer=Conv3D(kernel_size=3, filters=6 * 8 * 8, padding='same')
                                    (t1_d_layer1 + d_layer1),
                                    filter_size=6 * 8 * 8, kernel_size=5)
     u_layer2 = unet_upsample_layer(u_layer1,
-                                   concat_layer=Conv3D(kernel_size=3, filters=6*8*8, padding='same')
-                                   (t1_input+conv_input),
+                                   concat_layer=Conv3D(kernel_size=3, filters=6 * 8, padding='same')
+                                   (t1_input + conv_input),
                                    filter_size=6 * 8, kernel_size=5)
 
-    o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.experimental.numpy.float64)(u_layer2)
+    o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(u_layer2)
 
     return keras.Model([i_layer, t1_layer], o_layer)

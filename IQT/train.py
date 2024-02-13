@@ -2,15 +2,13 @@ import argparse
 import os.path
 from math import floor
 
-from tqdm import tqdm
-
 from data_loader import *
 from models import *
 
 model: keras.Model = unet3d_t1(16, 16)
 optim = keras.optimizers.Adam(learning_rate=1e-4)
 
-make_dataset = False
+make_dataset = True
 
 
 @tf.function
@@ -51,6 +49,8 @@ def main(args):
     #                              ipatch_size=16,
     #                              opatch_size=16)
 
+    time_start = 0
+
     if make_dataset:
         print(f"Generating patch triplet library on: {args.scratch_dir}")
 
@@ -90,6 +90,9 @@ def main(args):
 
         val_size = train_seq.__len__() - train_size
 
+        if args.cluster_mode:
+            time_start = time.time()
+
         for batch, (target_batch, (input_batch, t1_batch)) \
                 in enumerate(tqdm(train_seq, disable=args.cluster_mode)):
 
@@ -108,6 +111,9 @@ def main(args):
         # 44 Patch size on T1w, 25 PS on HR, 14 PS on LR
         # 25 -> 14 setup
 
+        if args.cluster_mode:
+            print("Time taken for run {}: {} seconds.".format((run + 1), time.time() - time_start))
+
         print(f"Run {run + 1} mean training loss: {train_loss / train_size}")
         print(f"Run {run + 1} mean validation loss: {val_loss / val_size}")
 
@@ -121,7 +127,7 @@ def main(args):
 
         train_seq.on_epoch_end()
 
-        model.save_weights(f"../output/UNet_NoT1/Run{run + 1}")
+        model.save_weights(f"/cluster/project9/IQTSuperRes/alp_IQT_Output/Run{run + 1}")
 
 
 if __name__ == '__main__':
@@ -137,7 +143,7 @@ if __name__ == '__main__':
     parser.add_argument('--cluster_mode', type=bool, default=False,
                         help='Determines whether tqdm will be silent (to reduce file size)')
 
-    parser.add_argument('--log_dir', type=str, default='../logs/run_results')
+    parser.add_argument('--log_dir', type=str, default='/home/acicimen/IQT-Connectom-Improved/logs/run_results')
 
     parser.add_argument('--epochs', type=int, default=60,
                         help='Number of epochs to run the model for. Default: 10')
@@ -145,13 +151,27 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='The learning rate of the model. Default: 1e-4')
 
-    parser.add_argument('--dt_data_dir', default='../data')
-    parser.add_argument('--t1_data_dir', default='../data')
+    parser.add_argument('--dt_data_dir', default='/SAN/vision/hcp/DCA_HCP.2013.3_Proc')
+    parser.add_argument('--t1_data_dir', default='/cluster/project0/IQT_Nigeria/HCP_t1t2_ALL/sim')
 
-    parser.add_argument('--subjects', nargs='+', default=['100307', '221319'])
+    parser.add_argument('--subjects', nargs='+', default=["100307", "131924", "162733", "210617", "541943", "792564", "100408",
+                                                          "133625", "163129", "211417", "545345", "826353", "101915", "133827",])
+            #"163432", "211720", "547046", "856766", "102816", "133928", "165840",
+            #"212318", "559053", "857263", "103414", "214019", "561242", "103515",
+            #"134324", "167743", "214221", "570243", "859671", "103818", "135932",
+            #"169343", "214423", "861456", "105115", "136833", "172332", "579665",
+            #"865363", "105216", "137128", "175439", "217126", "581349", "871964",
+            #"106016", "138231", "176542", "217429", "586460", "872158", "106319",
+            #"138534", "177746", "221319", "598568", "877168", "110411", "139637",
+            #"178950", "224022", "627549", "885975", "111009", "140420", "182739",
+            #"239944", "638049", "887373", "111312", "140824", "182840", "245333",
+            #"645551", "889579", "111514", "142828", "185139", "246133", "654754",
+            #"111716", "143325", "188347", "249947", "894673", "112819", "144226",
+            #"189450", "250427", "665254", "896879", "113215", "148032", "190031",
+            #"255639", "672756", "899885", "113619", "148335", "191437", "280739", "677968"])
     parser.add_argument('--batch_size', type=int, default=12)
 
-    parser.add_argument('--hr_subdir', default='HR')
+    parser.add_argument('--hr_subdir', default='T1w/Diffusion')
     parser.add_argument('--hr_file_head', default='dt_b1000_')
 
     parser.add_argument('--t1_subdir', default='T1w')

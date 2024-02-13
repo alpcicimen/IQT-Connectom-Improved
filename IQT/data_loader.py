@@ -3,6 +3,7 @@ import numpy.random as npr
 import tensorflow as tf
 import keras
 import os
+import time
 
 from math import ceil
 from random import randint, choices
@@ -29,7 +30,30 @@ class PairSequence(keras.utils.Sequence):
                       normalization_method='stdscore',
                       patch_spacing=8,
                       patch_size=16,
-                      cluster_mode=False):
+                      cluster_mode=False) -> None:
+        """
+        Static method for patch triplet data generation and storage.
+        The files are saved individually under the subject ids, and stored as .npy files.
+
+        Args:
+            diff_data_dir: The file directory for the diffusion tensors
+            t1_data_dir: The file directory for the T1w images
+            subject_labels: The list of subjects to be utilised
+            pairs_dir: The directory where the calculated pairs (or triplets with T1) will be stored at
+            upsampling_rate: The upsampling rate of the neural network.
+                The HR data is *downsampled* to the reciprocal of this rate.
+            hr_filedir: The file directory for individual diffusion tensors.
+            t1_filedir: The file directory for the T1w images.
+            mode: The diffusion modality.
+                Options are \"dti\" for diffusion tensors, and \"map\" for mean apparent propagators.
+            normalization_method: The method utilised to normalize the data.
+                See parameter ``normalization_method`` in :func:`util.apply_normalization` for more info
+            patch_spacing: The spacing between valid patches. Spacing == patch size guarantees no overlap.
+            patch_size: The patch size for the model. Odd numbered patches have a central voxel.
+            cluster_mode: argument that suppresses tqdm outputs (use if you're running this on the cluster)
+        Returns:
+            None
+        """
 
         match mode:
 
@@ -42,7 +66,13 @@ class PairSequence(keras.utils.Sequence):
             case _:
                 raise TypeError("Unsupported data mode: {}".format(mode))
 
+        if cluster_mode:
+            cur_time = time.time()
+
         for subject_label in subject_labels:
+
+            if cluster_mode:
+                print("Current subject: ", subject_label)
 
             if not os.path.exists(os.path.join(pairs_dir, subject_label)):
                 os.makedirs(os.path.join(pairs_dir, subject_label))
@@ -75,9 +105,13 @@ class PairSequence(keras.utils.Sequence):
 
             subject_data_t1 = zoom(subject_data_t1, target_scales)
 
-            util.apply_normalization(subject_data_lr, mask, method=normalization_method)
-            util.apply_normalization(subject_data_hr, mask, method=normalization_method)
-            util.apply_normalization(subject_data_t1, mask, method=normalization_method)
+            # util.apply_normalization(subject_data_lr, mask, method=normalization_method)
+            # util.apply_normalization(subject_data_hr, mask, method=normalization_method)
+            # util.apply_normalization(subject_data_t1, mask, method=normalization_method)
+
+            util.apply_clipped_normalization(subject_data_lr, mask, method=normalization_method, deviations=2)
+            util.apply_clipped_normalization(subject_data_hr, mask, method=normalization_method, deviations=2)
+            util.apply_clipped_normalization(subject_data_t1, mask, method=normalization_method, deviations=2)
 
             subject_data_lr = np.pad(subject_data_lr,
                                      pad_width=np.array([[8, 8], [8, 8], [8, 8], [0, 0]]), mode='edge')
@@ -117,11 +151,23 @@ class PairSequence(keras.utils.Sequence):
                 with open(os.path.join(pairs_dir, subject_label, f'{s}.npy'), 'wb') as f:
                     np.save(f, comb_patch, allow_pickle=False)
 
+        if cluster_mode:
+            print(f"Total time for patch generation: {time.time() - cur_time} seconds.")
+
     def __init__(self,
                  pair_dir,
                  subject_labels,
                  pairs_per_subject=800,
                  batch_size=12):
+
+        """
+        Creates a custom keras Sequence for iteration. This iterator is suitable for use with :func:`keras.model.fit()`
+
+        :param pair_dir: Directory where the triplet data is stored at
+        :param subject_labels: Labels of subjects which will be used for training
+        :param pairs_per_subject: Selects a subset of triplets per epoch for training
+        :param batch_size: The size of the batches in the NN for training
+        """
 
         self.pair_dir = pair_dir
         self.subject_labels = subject_labels
@@ -135,6 +181,13 @@ class PairSequence(keras.utils.Sequence):
         pass
 
     def __get_indices__(self) -> np.ndarray[str]:
+        """
+        Private function that randomly acquires self.pair_dir amount of patch triplets,
+            and returns the indices for the epoch.
+
+        Returns:
+            The selected patch triplets for utilisation in the current epoch
+        """
 
         run_indices = []
 
@@ -152,6 +205,13 @@ class PairSequence(keras.utils.Sequence):
         return run_indices
 
     def __getitem__(self, index):
+        """
+        Acquires the patch triplet at the selected index of the training batch.
+            Due to random sampling and shuffling the patch at same index values will differ between epochs.
+
+        :param index: The index value of the batch to acquire the patch from
+        :return: The acquired patch triplet of form `Tuple[tf.Tensor, tf.Tensor, tf.Tensor]`
+        """
 
         target_patches = []
         input_patches = []
@@ -166,7 +226,8 @@ class PairSequence(keras.utils.Sequence):
             input_patches.append(patch[..., hr_lim:-1])
             t1_patches.append(patch[..., -1:])
 
-        return tf.stack(target_patches), (tf.stack(input_patches), tf.stack(t1_patches))
+        return (tf.cast(tf.stack(target_patches), dtype=tf.float32),
+                (tf.cast(tf.stack(input_patches), dtype=tf.float32),tf.cast(tf.stack(t1_patches), dtype=tf.float32)))
 
     def sample_slice(self, subj, *_):
 
@@ -349,7 +410,7 @@ class DataLoader:
         is_keep[:, 5] = (possible_indices[:, 2] + patch_size) < dims[2]
 
         is_keep = np.all(is_keep, axis=1)
-        row_list = np.delete(np.array(range(possible_indices.shape[0])), np.where(is_keep == False), 0)
+        row_list = np.delete(np.array(range(possible_indices.shape[0])), np.where(~is_keep), 0)
 
         indices = possible_indices[row_list, :]
 
@@ -494,14 +555,3 @@ class TrainingSequence(keras.utils.Sequence):
     def on_epoch_end(self):
 
         self.__sel_epoch_indices__()
-
-        # npr.shuffle(self.valid_patch_indices)
-
-# if __name__ == '__main__':
-#
-#     seq = PairSequence(pair_dir='../data/patch_pairs',
-#                        subject_labels=['100307', '221319'], pairs_per_subject=800, batch_size=12)
-#
-#     patch = seq[5]
-#
-#     pass
