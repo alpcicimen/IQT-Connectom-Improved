@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 import util
 
-from scipy.ndimage import zoom
+from scipy.ndimage import zoom, binary_erosion
 
 
 class PairSequence(keras.utils.Sequence):
@@ -30,6 +30,7 @@ class PairSequence(keras.utils.Sequence):
                       normalization_method='stdscore',
                       patch_spacing=8,
                       patch_size=16,
+                      mask_erosion=0,
                       cluster_mode=False) -> None:
         """
         Static method for patch triplet data generation and storage.
@@ -50,6 +51,7 @@ class PairSequence(keras.utils.Sequence):
                 See parameter ``normalization_method`` in :func:`util.apply_normalization` for more info
             patch_spacing: The spacing between valid patches. Spacing == patch size guarantees no overlap.
             patch_size: The patch size for the model. Odd numbered patches have a central voxel.
+            mask_erosion: The value for which the mask will be eroded for. Default value 0 means no erosion.
             cluster_mode: argument that suppresses tqdm outputs (use if you're running this on the cluster)
         Returns:
             None
@@ -100,7 +102,11 @@ class PairSequence(keras.utils.Sequence):
             target_scales = (np.array(subject_data_hr.shape[:-1] + (1,)) /
                              np.array(subject_data_t1.shape))
 
-            mask = np.array(subject_data_hr[..., 0] == 0, dtype=bool)
+            mask = np.array(subject_data_hr[..., 0] > -1, dtype=bool)
+
+            if mask_erosion:
+                mask = binary_erosion(mask, np.ones((mask_erosion, mask_erosion, mask_erosion)))
+
             subject_data_hr = subject_data_hr[..., 2:]
 
             subject_data_t1 = zoom(subject_data_t1, target_scales)

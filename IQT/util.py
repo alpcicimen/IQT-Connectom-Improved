@@ -7,7 +7,7 @@ import os
 from tqdm import tqdm
 
 
-def load_dtis(directory: str,
+def load_dtis(directory: str | os.PathLike[str],
               file_head: str) -> np.ndarray:
     subject_dts = []
 
@@ -26,7 +26,7 @@ def load_dtis(directory: str,
     return merged_dts
 
 
-def load_maps(directory: str,
+def load_maps(directory: str | os.PathLike[str],
               file_head: str) -> np.ndarray:
 
     subject_propagators = []
@@ -46,7 +46,7 @@ def load_maps(directory: str,
     return merged_maps
 
 
-def load_structural(directory: str,
+def load_structural(directory: str | os.PathLike[str],
                     file_head: str) -> np.ndarray:
 
     subj = None
@@ -67,8 +67,8 @@ def load_structural(directory: str,
 
 
 def save_dtis(tensors: np.ndarray,
-              save_file_loc: str,
-              reference_header_dir: str,
+              save_file_loc: str | os.PathLike[str],
+              reference_header_dir: str | os.PathLike[str],
               dti_file_start='dt_b1000_recon_') -> None:
 
     if os.path.exists(f"{reference_header_dir}.nii"):

@@ -62,8 +62,10 @@ def main(args):
                                    hr_filedir=os.path.join(args.hr_subdir, args.hr_file_head),
                                    t1_filedir=os.path.join(args.t1_subdir, args.t1_file_head),
                                    mode='dti',
+                                   normalization_method='stdscore',
                                    patch_spacing=8,
                                    patch_size=16,
+                                   mask_erosion=args.mask_erosion,
                                    cluster_mode=args.cluster_mode)
 
         print("Generated patch triplets.")
@@ -176,6 +178,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--t1_subdir', default='T1w')
     parser.add_argument('--t1_file_head', default='T1w_acpc_dc_restore_brain')
+
+    parser.add_argument('--mask_erosion', default=3)
 
     args = parser.parse_args()
 
