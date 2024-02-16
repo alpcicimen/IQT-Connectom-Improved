@@ -2,6 +2,7 @@ from typing import Tuple
 
 import keras
 import tensorflow as tf
+from keras.activations import softplus
 
 from layers import *
 
@@ -139,8 +140,8 @@ def unet3d(ipatch_size):
     return keras.Model([i_layer, t1_layer], o_layer)
 
 
-def unet3d_t1(ipatch_size,
-              tw_patch_size=None):
+def unet3d_t1_v1(ipatch_size,
+                 tw_patch_size=None):
 
     i_layer = keras.layers.Input(shape=[ipatch_size,
                                         ipatch_size,
@@ -182,5 +183,52 @@ def unet3d_t1(ipatch_size,
                                    filter_size=6 * 8, kernel_size=5)
 
     o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(u_layer2)
+
+    return keras.Model([i_layer, t1_layer], o_layer)
+
+
+def unet3d_t1_v2(ipatch_size,
+                 tw_patch_size=None):
+
+    i_layer = keras.layers.Input(shape=[ipatch_size,
+                                        ipatch_size,
+                                        ipatch_size, 6], name='input', dtype=tf.float32)
+
+    __tw_patch_size = 2 * ipatch_size if tw_patch_size is None else tw_patch_size
+
+    t1_layer = keras.layers.Input(shape=[__tw_patch_size,
+                                         __tw_patch_size,
+                                         __tw_patch_size, 1], name='input_t1', dtype=tf.float32)
+
+    conv_input = Sequential([Conv3D(kernel_size=5, filters=6 * 6, padding='same'),
+                             LeakyReLU(),
+                             Conv3D(kernel_size=5, filters=6 * 6, padding='same')])(i_layer)
+
+    t1_input = Sequential([Conv3D(kernel_size=5,
+                                  strides=(2 if tw_patch_size is None else 1),  # Do not apply stride on custom T1 sizes
+                                  filters=6 * 6, padding='same'),
+                           LeakyReLU(),
+                           Conv3D(kernel_size=5, filters=6 * 6, padding='same')])(t1_layer)
+
+    t1_d_layer1 = unet_downsample_layer_v2(LeakyReLU()(t1_input), kernel_size=5, filter_size=6 * 6 * 6)
+    t1_d_layer2 = unet_downsample_layer_v2(LeakyReLU()(t1_d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
+
+    d_layer1 = unet_downsample_layer_v2(LeakyReLU()(conv_input), kernel_size=5, filter_size=6 * 6 * 6)
+    d_layer2 = unet_downsample_layer_v2(LeakyReLU()(d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
+
+    d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(LeakyReLU()(t1_d_layer2 + d_layer2))
+
+    u_layer1 = unet_upsample_layer_v2(d_layer_n,
+                                      concat_layer=concatenate([d_layer1, t1_d_layer1], axis=4),
+                                      filter_size=6 * 6 * 6, kernel_size=5)
+    u_layer2 = unet_upsample_layer_v2(u_layer1,
+                                      concat_layer=concatenate([conv_input, t1_input], axis=4),
+                                      filter_size=6 * 6, kernel_size=5)
+
+    o_layer = LeakyReLU()(u_layer2)
+
+    o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(o_layer)
+
+    o_layer = o_layer + i_layer
 
     return keras.Model([i_layer, t1_layer], o_layer)

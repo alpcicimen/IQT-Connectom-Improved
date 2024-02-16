@@ -3,7 +3,7 @@ import os.path
 from math import floor
 
 from data_loader import *
-from models import *
+from models import unet3d_t1_v2 as unet3d_t1
 
 model: keras.Model = unet3d_t1(16, 16)
 optim = keras.optimizers.Adam(learning_rate=1e-4)
