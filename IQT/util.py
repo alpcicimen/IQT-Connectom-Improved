@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -214,7 +214,10 @@ def apply_clipped_normalization(tensors, mask, method=None, deviations: int = 2)
             return None
 
 
-def md_fa_cfa(tensors, mask) -> Tuple[NDArray[float], NDArray[float], NDArray[float]]:
+def md_fa_cfa(tensors, mask) -> Tuple[NDArray[float],
+                                      NDArray[float],
+                                      NDArray[float],
+                                      NDArray[float]]:
     """
     Generate the mean diffusivity (MD), fractional anisotropy (FA) and coloured fractional anisotropy (CFA) images from
     the tensor data. The non-masked regions are not evaluated.
@@ -227,6 +230,7 @@ def md_fa_cfa(tensors, mask) -> Tuple[NDArray[float], NDArray[float], NDArray[fl
     md = np.zeros(tensors.shape[:-1])
     fa = np.zeros(tensors.shape[:-1])
     cfa = np.zeros(tensors.shape[:-1] + (3,))
+    peigv = np.zeros(tensors.shape[:-1] + (3,))
 
     (x_shape, y_shape, z_shape, _) = tensors.shape
 
@@ -244,6 +248,7 @@ def md_fa_cfa(tensors, mask) -> Tuple[NDArray[float], NDArray[float], NDArray[fl
                     md[i, j, k] = np.mean(eig_vals)
 
                     fa[i, j, k] = np.sqrt(1.5 * np.sum((eig_vals - eig_vals.mean()) ** 2) / np.sum(eig_vals ** 2))
+                    peigv[i, j, k] = eig_vecs[:, eig_vals.argmax()]
                     cfa[i, j, k, :] = fa[i, j, k] * np.abs(eig_vecs[:, eig_vals.argmax()])
 
-    return md, fa, cfa
+    return md, fa, cfa, peigv

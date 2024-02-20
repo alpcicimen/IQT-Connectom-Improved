@@ -3,9 +3,9 @@ import os.path
 from math import floor
 
 from data_loader import *
-from models import unet3d_t1_v2 as unet3d_t1
+from models import *
 
-model: keras.Model = unet3d_t1(16, 16)
+global model
 optim = keras.optimizers.Adam(learning_rate=1e-4)
 
 make_dataset = True
@@ -51,6 +51,9 @@ def main(args):
 
     time_start = 0
 
+    global model
+    model = config_model(args)
+
     if make_dataset:
         print(f"Generating patch triplet library on: {args.scratch_dir}")
 
@@ -62,7 +65,7 @@ def main(args):
                                    hr_filedir=os.path.join(args.hr_subdir, args.hr_file_head),
                                    t1_filedir=os.path.join(args.t1_subdir, args.t1_file_head),
                                    mode='dti',
-                                   normalization_method='stdscore',
+                                   normalization_method='minmax',
                                    patch_spacing=8,
                                    patch_size=16,
                                    mask_erosion=args.mask_erosion,
@@ -156,8 +159,9 @@ if __name__ == '__main__':
     parser.add_argument('--dt_data_dir', default='/SAN/vision/hcp/DCA_HCP.2013.3_Proc')
     parser.add_argument('--t1_data_dir', default='/cluster/project0/IQT_Nigeria/HCP_t1t2_ALL/sim')
 
-    parser.add_argument('--subjects', nargs='+', default=["100307", "131924", "162733", "210617", "541943", "792564", "100408",
-                                                          "133625", "163129", "211417", "545345", "826353", "101915", "133827",])
+    parser.add_argument('--subjects', nargs='+',
+                        default=["100307", "131924", "162733", "210617", "541943", "792564", "100408",
+                                 "133625", "163129", "211417", "545345", "826353", "101915", "133827",])
             #"163432", "211720", "547046", "856766", "102816", "133928", "165840",
             #"212318", "559053", "857263", "103414", "214019", "561242", "103515",
             #"134324", "167743", "214221", "570243", "859671", "103818", "135932",
