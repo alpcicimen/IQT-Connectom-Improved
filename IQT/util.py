@@ -1,6 +1,8 @@
 from typing import Tuple
 
 import numpy as np
+from numpy.typing import NDArray
+
 import nibabel as nib
 import os
 
@@ -8,10 +10,11 @@ from tqdm import tqdm
 
 
 def load_dtis(directory: str | os.PathLike[str],
-              file_head: str) -> np.ndarray:
+              file_head: str,
+              only_tensors=False) -> np.ndarray:
     subject_dts = []
 
-    for i in range(1, 9):
+    for i in range(3 if only_tensors else 1, 9):
         if os.path.exists(os.path.join(directory, f"{file_head}{i}.nii")):
             subj = np.array(nib.load(os.path.join(directory, f"{file_head}{i}.nii")).dataobj)
         elif os.path.exists(os.path.join(directory, f"{file_head}{i}.nii.gz")):
@@ -66,9 +69,10 @@ def load_structural(directory: str | os.PathLike[str],
     return subj
 
 
-def save_dtis(tensors: np.ndarray,
+def save_dtis(tensors: NDArray,
               save_file_loc: str | os.PathLike[str],
               reference_header_dir: str | os.PathLike[str],
+              mask: NDArray | None = None,
               dti_file_start='dt_b1000_recon_') -> None:
 
     if os.path.exists(f"{reference_header_dir}.nii"):
@@ -82,10 +86,39 @@ def save_dtis(tensors: np.ndarray,
 
     for t in range(tensors.shape[-1]):
         nib.save(nib.Nifti1Image(tensors[..., t], None, reference_header),
-                 os.path.join(save_file_loc, f"{dti_file_start}{t+2}"))
+                 os.path.join(save_file_loc, f"{dti_file_start}{t+3}"))
+
+    if mask is not None:
+        nib.save(nib.Nifti1Image(mask, None, reference_header),
+                 os.path.join(save_file_loc, f"{dti_file_start}1"))
 
 
-def apply_normalization(tensors, mask: np.ndarray[bool], method='minmax') -> np.ndarray:
+def save_md_fa_cfa(md: NDArray,
+                   fa: NDArray,
+                   cfa: NDArray,
+                   save_file_loc: str | os.PathLike[str],
+                   reference_header_dir: str | os.PathLike[str]) -> None:
+
+    if os.path.exists(f"{reference_header_dir}.nii"):
+        reference_file = nib.load(f"{reference_header_dir}.nii")
+    elif os.path.exists(f"{reference_header_dir}.nii.gz"):
+        reference_file = nib.load(f"{reference_header_dir}.nii.gz")
+    else:
+        raise FileNotFoundError("No such file in directory: \"{}\"".format(f"{reference_header_dir}.nii.gz"))
+
+    reference_header = reference_file.header
+
+    nib.save(nib.Nifti1Image(md, None, reference_header),
+             os.path.join(save_file_loc, f"md"))
+
+    nib.save(nib.Nifti1Image(fa, None, reference_header),
+             os.path.join(save_file_loc, f"fa"))
+
+    nib.save(nib.Nifti1Image(cfa, None, reference_header),
+             os.path.join(save_file_loc, f"cfa"))
+
+
+def apply_normalization(tensors, mask: NDArray[bool], method='minmax') -> NDArray:
     """
     Applies either min-max or standard score normalisation on the data.
     The normalisation is applied to the reference.
@@ -148,7 +181,7 @@ def revert_normalization(tensors, mask, norm_metrics, method='minmax') -> None:
     tensors[~mask, :] = 0
 
 
-def apply_clipped_normalization(tensors, mask, method=None, deviations: int = 2) -> np.ndarray | None:
+def apply_clipped_normalization(tensors, mask, method=None, deviations: int = 2) -> NDArray | None:
     """
     Applies standard score normalization, and clips the values to the specific std range.
     Depending on the modality the returned value either has the normalization or returned with the original range.
@@ -181,7 +214,7 @@ def apply_clipped_normalization(tensors, mask, method=None, deviations: int = 2)
             return None
 
 
-def md_fa_cfa(tensors, mask) -> Tuple[np.ndarray[float], np.ndarray[float], np.ndarray[float]]:
+def md_fa_cfa(tensors, mask) -> Tuple[NDArray[float], NDArray[float], NDArray[float]]:
     """
     Generate the mean diffusivity (MD), fractional anisotropy (FA) and coloured fractional anisotropy (CFA) images from
     the tensor data. The non-masked regions are not evaluated.

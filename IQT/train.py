@@ -100,13 +100,13 @@ def main(args):
 
             if batch <= train_size:
 
-                closs = train_step(target_batch, input_batch, -t1_batch)
+                closs = train_step(target_batch, input_batch, t1_batch)
 
                 train_loss += closs
 
             else:
 
-                closs = val_step(target_batch, input_batch, -t1_batch)
+                closs = val_step(target_batch, input_batch, t1_batch)
                 val_loss += closs
 
         # 2.2, 1.25, 0.7 -> 44, 25, 14
@@ -124,7 +124,7 @@ def main(args):
             tf.summary.scalar('Validation Epoch Mean Loss', val_loss / val_size, step=run)
 
             tf.summary.image('Model Output Slice',
-                             model([sample_i, -sample_t1])[:, :, 7, :, 0:1],
+                             model([sample_i, sample_t1])[:, :, 7, :, 0:1],
                              step=run)
 
         train_seq.on_epoch_end()

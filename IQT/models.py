@@ -2,7 +2,7 @@ from typing import Tuple
 
 import keras
 import tensorflow as tf
-from keras.activations import softplus
+from keras.activations import softplus, tanh
 
 from layers import *
 
@@ -13,7 +13,7 @@ def config_model(args):
 
         case "UNet-T1":
 
-            return unet3d_t1(args.patch_size, args.t1_patch_size)
+            return unet3d_t1_v2(args.patch_size, args.t1_patch_size)
 
         case _:
             raise ValueError(f"No model configuration for \"{args.model}\" found!")
@@ -229,6 +229,6 @@ def unet3d_t1_v2(ipatch_size,
 
     o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(o_layer)
 
-    o_layer = o_layer + i_layer
+    o_layer = tanh(o_layer) + i_layer
 
     return keras.Model([i_layer, t1_layer], o_layer)
