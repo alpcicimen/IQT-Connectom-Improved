@@ -2,11 +2,13 @@ import argparse
 import os.path
 from math import floor
 
+import keras.optimizers.schedules
+
 from data_loader import *
 from models import *
 
 global model
-optim = keras.optimizers.Adam(learning_rate=1e-4)
+global optim
 
 make_dataset = True
 
@@ -78,18 +80,28 @@ def main(args):
                              batch_size=args.batch_size,
                              pairs_per_subject=800)
 
+    _lr = keras.optimizers.schedules.ExponentialDecay(initial_learning_rate=1e-4,
+                                                      decay_steps=10*len(train_seq),
+                                                      decay_rate=0.5)
+
+    global optim
+    optim = keras.optimizers.Adam(learning_rate=_lr)
+
     summary_writer = tf.summary.create_file_writer(args.log_dir)
 
     (sample_t, sample_i, sample_t1) = train_seq.sample_slice(0, (60, 60, 60))
 
     with (summary_writer.as_default()):
         tf.summary.image('Target Slice', sample_t[:, :, 7, :, 0:1], step=0)
-        tf.summary.image('Input T1w Slice', -sample_t1[:, :, 7, :, :], step=0)
+        tf.summary.image('Input T1w Slice', sample_t1[:, :, 7, :, :], step=0)
 
     for run in range(args.epochs):
 
         train_loss = 0
         val_loss = 0
+
+        with (summary_writer.as_default()):
+            tf.summary.scalar('Loss rate at start', optim.learning_rate, step=run)
 
         train_size = floor(0.9 * train_seq.__len__())
 
