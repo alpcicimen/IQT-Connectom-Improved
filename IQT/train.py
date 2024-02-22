@@ -3,7 +3,7 @@ import os.path
 from math import floor
 
 import keras.optimizers.schedules
-from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay
+from tensorflow.keras.optimizers.schedules import ExponentialDecay, PiecewiseConstantDecay, LearningRateSchedule
 
 from data_loader import *
 from models import *
@@ -11,8 +11,37 @@ from models import *
 global model
 global optim
 
-make_dataset = True
+make_dataset = False
 
+
+def create_optim(args, dataset_size) -> LearningRateSchedule | float:
+
+    global optim
+
+    match args.lr_decay:
+
+        case 'exponential':
+
+            _lr = ExponentialDecay(initial_learning_rate=args.lr,
+                                   decay_steps=10*dataset_size,
+                                   decay_rate=0.5)
+
+        case 'constant':
+
+            boundaries = (np.arange(0, args.epochs//10) + 1)*10*dataset_size
+
+            values = np.power(0.5, range(0, args.epochs//10 + 1)) * args.lr
+
+            _lr = PiecewiseConstantDecay(boundaries=boundaries.tolist(),
+                                         values=values.tolist())
+
+        case _:
+
+            _lr = args.lr
+
+    optim = keras.optimizers.Adam(learning_rate=_lr)
+
+    return _lr
 
 @tf.function
 def loss_fn(output: tf.Tensor, target: tf.Tensor):
@@ -81,12 +110,7 @@ def main(args):
                              batch_size=args.batch_size,
                              pairs_per_subject=800)
 
-    _lr = ExponentialDecay(initial_learning_rate=1e-4,
-                           decay_steps=10*len(train_seq),
-                           decay_rate=0.5)
-
-    global optim
-    optim = keras.optimizers.Adam(learning_rate=_lr)
+    _lr = create_optim(args, len(train_seq))
 
     summary_writer = tf.summary.create_file_writer(args.log_dir)
 
@@ -102,7 +126,8 @@ def main(args):
         val_loss = 0
 
         with (summary_writer.as_default()):
-            tf.summary.scalar('Loss rate at start', optim.learning_rate, step=run)
+            tf.summary.scalar('Loss rate at start',
+                              _lr if isinstance(_lr, float) else _lr(len(train_seq)*run + 1), step=run)
 
         train_size = floor(0.9 * train_seq.__len__())
 
@@ -168,6 +193,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='The learning rate of the model. Default: 1e-4')
+    parser.add_argument('--lr_decay', default='constant',
+                        help='The learning decay type. Possible values: [(None), constant, exponential]')
 
     parser.add_argument('--dt_data_dir', default='/SAN/vision/hcp/DCA_HCP.2013.3_Proc')
     parser.add_argument('--t1_data_dir', default='/cluster/project0/IQT_Nigeria/HCP_t1t2_ALL/sim')
