@@ -87,12 +87,13 @@ class PairSequence(keras.utils.Sequence):
             subject_data_lr = zoom(subject_data_hr[..., 2:],
                                    zoom=(1. / upsampling_rate,
                                          1. / upsampling_rate,
-                                         1. / upsampling_rate, 1))
+                                         1. / upsampling_rate, 1),
+                                   order=1)
 
             lr_dims = (np.array(subject_data_hr.shape[:-1] + (1,)) /
                        np.array(subject_data_lr.shape[:-1] + (1,)))
 
-            subject_data_lr = zoom(subject_data_lr, lr_dims)
+            subject_data_lr = zoom(subject_data_lr, lr_dims, order=1)
 
             subject_data_t1 = util.load_structural(
                 os.path.join(t1_data_dir, subject_label),
@@ -109,7 +110,7 @@ class PairSequence(keras.utils.Sequence):
 
             subject_data_hr = subject_data_hr[..., 2:]
 
-            subject_data_t1 = zoom(subject_data_t1, target_scales)
+            subject_data_t1 = zoom(subject_data_t1, target_scales, order=1)
 
             # util.apply_normalization(subject_data_lr, mask, method=normalization_method)
             # util.apply_normalization(subject_data_hr, mask, method=normalization_method)
