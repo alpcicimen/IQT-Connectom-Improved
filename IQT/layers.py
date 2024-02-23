@@ -128,20 +128,17 @@ def unet_downsample_layer_v2(prev_layer,
                              rep_layers=2):
 
     conv = Sequential([
-        LeakyReLU(),
         Conv3D(filters=filter_size,
                kernel_size=kernel_size,
                padding="same",
                strides=2),
-        LeakyReLU()
     ])
 
     for n in range(rep_layers):
+        conv.add(LeakyReLU())
         conv.add(Conv3D(filters=filter_size,
-                         kernel_size=3,
-                         padding="same"))
-        if n < (rep_layers - 1):
-            conv.add(LeakyReLU())
+                        kernel_size=3,
+                        padding="same"))
 
     pre_act = conv(prev_layer)
 
