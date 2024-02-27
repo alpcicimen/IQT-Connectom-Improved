@@ -11,7 +11,7 @@ from typing import List, Tuple
 
 from tqdm import tqdm
 
-import util
+from IQT import util
 
 from scipy.ndimage import zoom, binary_erosion
 
@@ -88,12 +88,13 @@ class PairSequence(keras.utils.Sequence):
                                    zoom=(1. / upsampling_rate,
                                          1. / upsampling_rate,
                                          1. / upsampling_rate, 1),
-                                   order=1)
+                                   order=1,
+                                   prefilter=False)
 
             lr_dims = (np.array(subject_data_hr.shape[:-1] + (1,)) /
                        np.array(subject_data_lr.shape[:-1] + (1,)))
 
-            subject_data_lr = zoom(subject_data_lr, lr_dims, order=1)
+            subject_data_lr = zoom(subject_data_lr, lr_dims, order=1, prefilter=False)
 
             subject_data_t1 = util.load_structural(
                 os.path.join(t1_data_dir, subject_label),
@@ -110,7 +111,7 @@ class PairSequence(keras.utils.Sequence):
 
             subject_data_hr = subject_data_hr[..., 2:]
 
-            subject_data_t1 = zoom(subject_data_t1, target_scales, order=1)
+            subject_data_t1 = zoom(subject_data_t1, target_scales, order=1, prefilter=False)
 
             # util.apply_normalization(subject_data_lr, mask, method=normalization_method)
             # util.apply_normalization(subject_data_hr, mask, method=normalization_method)

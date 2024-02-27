@@ -155,7 +155,7 @@ def apply_normalization(tensors, mask: NDArray[bool], method='minmax') -> NDArra
 
         norm_metrics[t, :] = metric
 
-    tensors[mask == False, :] = 0
+    tensors[~mask, :] = 0
 
     return norm_metrics
 

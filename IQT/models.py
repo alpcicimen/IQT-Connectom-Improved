@@ -5,7 +5,7 @@ import keras.layers as KL
 import tensorflow as tf
 from keras.activations import softplus, tanh
 
-from layers import *
+from IQT.layers import *
 
 
 def config_model(args):
@@ -17,7 +17,7 @@ def config_model(args):
             args.patch_size = 16
             args.t1_patch_size = 16
 
-            return unet3d_t1_v3(args.patch_size, args.t1_patch_size)
+            return unet3d_t1_v2(args.patch_size, args.t1_patch_size)
 
         case "UNet":
 
@@ -242,6 +242,7 @@ def unet3d_t1_v2(ipatch_size,
     o_layer = tanh(o_layer) + i_layer
 
     return keras.Model([i_layer, t1_layer], o_layer, name='UNet-T1')
+
 
 def unet3d_not1_v2(ipatch_size):
 

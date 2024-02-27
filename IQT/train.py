@@ -3,13 +3,14 @@ import os.path
 from math import floor
 
 import keras.optimizers.schedules
-from tensorflow.keras.optimizers.schedules import ExponentialDecay, PiecewiseConstantDecay, LearningRateSchedule
+from keras.optimizers.schedules import ExponentialDecay, PiecewiseConstantDecay, LearningRateSchedule
 
 from data_loader import *
 from models import *
 
 global model
 global optim
+global loss_fn
 
 make_dataset = False
 
@@ -21,30 +22,32 @@ def create_optim(args, dataset_size) -> LearningRateSchedule | float:
     match args.lr_decay:
 
         case 'exponential':
-
             _lr = ExponentialDecay(initial_learning_rate=args.lr,
                                    decay_steps=10*dataset_size,
                                    decay_rate=0.5)
 
         case 'constant':
-
             boundaries = (np.arange(0, args.epochs//10) + 1)*10*dataset_size
-
             values = np.power(0.5, range(0, args.epochs//10 + 1)) * args.lr
 
             _lr = PiecewiseConstantDecay(boundaries=boundaries.tolist(),
                                          values=values.tolist())
 
         case _:
-
             _lr = args.lr
 
     optim = keras.optimizers.Adam(learning_rate=_lr)
 
     return _lr
 
+
 @tf.function
-def loss_fn(output: tf.Tensor, target: tf.Tensor):
+def l1_loss_fn(output: tf.Tensor, target: tf.Tensor):
+    return tf.reduce_mean(tf.abs(target - output))
+
+
+@tf.function
+def l2_loss_fn(output: tf.Tensor, target: tf.Tensor):
     return tf.reduce_mean(tf.square(target - output))
 
 
@@ -70,21 +73,16 @@ def val_step(target_batch, input_batch, t1_batch):
 
 
 def main(args):
-    # train_seq = TrainingSequence(data_dir=args.dt_data_dir,
-    #                              target_dir=args.hr_filename,
-    #                              input_dir=args.lr_filename,
-    #                              mode='dti',
-    #                              normalization_method='stdscore',
-    #                              subject_labels=['100307', '221319'],
-    #                              batch_size=12,
-    #                              pairs_per_subject=8000,
-    #                              ipatch_size=16,
-    #                              opatch_size=16)
-
-    time_start = 0
 
     global model
+    global loss_fn
+
+    time_start = 0
     model = config_model(args)
+
+    match str(args.loss_type).lower():
+        case "l1": loss_fn = l1_loss_fn
+        case _: loss_fn = l2_loss_fn
 
     if make_dataset:
         print(f"Generating patch triplet library on: {args.scratch_dir}")
@@ -191,9 +189,11 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=60,
                         help='Number of epochs to run the model for. Default: 10')
 
+    parser.add_argument('--loss_type', type=str, default='l1',
+                        help='The loss type utilised during training. Possible values: [l1, l2]. Default: l1')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='The learning rate of the model. Default: 1e-4')
-    parser.add_argument('--lr_decay', default='constant',
+    parser.add_argument('--lr_decay', default=None,
                         help='The learning decay type. Possible values: [(None), constant, exponential]')
 
     parser.add_argument('--dt_data_dir', default='/SAN/vision/hcp/DCA_HCP.2013.3_Proc')
