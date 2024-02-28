@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from IQT import util
 
-from scipy.ndimage import zoom, binary_erosion
+from scipy.ndimage import zoom, binary_erosion, gaussian_filter
 
 
 class PairSequence(keras.utils.Sequence):
@@ -23,7 +23,7 @@ class PairSequence(keras.utils.Sequence):
                       t1_data_dir,
                       subject_labels,
                       pairs_dir,
-                      upsampling_rate=1.25 / .7,
+                      upsampling_rate=1.25/.7,
                       hr_filedir=os.path.join('HR', 'dt_b1000_'),
                       t1_filedir=os.path.join('T1w', 'T1w_acpc_dc_restore_brain'),
                       mode='dti',
@@ -31,6 +31,7 @@ class PairSequence(keras.utils.Sequence):
                       patch_spacing=8,
                       patch_size=16,
                       mask_erosion=0,
+                      apply_blurring=True,
                       cluster_mode=False) -> None:
         """
         Static method for patch triplet data generation and storage.
@@ -52,6 +53,8 @@ class PairSequence(keras.utils.Sequence):
             patch_spacing: The spacing between valid patches. Spacing == patch size guarantees no overlap.
             patch_size: The patch size for the model. Odd numbered patches have a central voxel.
             mask_erosion: The value for which the mask will be eroded for. Default value 0 means no erosion.
+            apply_blurring: Condition that determines whether the model has blurring applied pre-downsampling.
+                Default - True
             cluster_mode: argument that suppresses tqdm outputs (use if you're running this on the cluster)
         Returns:
             None
@@ -84,7 +87,29 @@ class PairSequence(keras.utils.Sequence):
                 hr_filedir
             )
 
-            subject_data_lr = zoom(subject_data_hr[..., 2:],
+            subject_data_lr = np.copy(subject_data_hr[..., 2:])
+
+            subject_data_t1 = util.load_structural(
+                os.path.join(t1_data_dir, subject_label),
+                t1_filedir
+            )
+
+            if apply_blurring:
+
+                blur_sigma = 2 * np.log(10) / (2 * np.pi) * upsampling_rate
+                windowsize = np.int32(np.ceil(2.5 * blur_sigma) / 2) * 2 + 1
+
+                subject_data_lr = gaussian_filter(subject_data_lr,
+                                                  sigma=blur_sigma,
+                                                  radius=windowsize,
+                                                  axes=[0, 1, 2])
+
+                subject_data_t1 = gaussian_filter(subject_data_t1,
+                                                  sigma=blur_sigma,
+                                                  radius=windowsize,
+                                                  axes=[0, 1, 2])
+
+            subject_data_lr = zoom(subject_data_lr,
                                    zoom=(1. / upsampling_rate,
                                          1. / upsampling_rate,
                                          1. / upsampling_rate, 1),
@@ -95,11 +120,6 @@ class PairSequence(keras.utils.Sequence):
                        np.array(subject_data_lr.shape[:-1] + (1,)))
 
             subject_data_lr = zoom(subject_data_lr, lr_dims, order=1, prefilter=False)
-
-            subject_data_t1 = util.load_structural(
-                os.path.join(t1_data_dir, subject_label),
-                t1_filedir
-            )
 
             target_scales = (np.array(subject_data_hr.shape[:-1] + (1,)) /
                              np.array(subject_data_t1.shape))
@@ -113,24 +133,31 @@ class PairSequence(keras.utils.Sequence):
 
             subject_data_t1 = zoom(subject_data_t1, target_scales, order=1, prefilter=False)
 
-            # util.apply_normalization(subject_data_lr, mask, method=normalization_method)
-            # util.apply_normalization(subject_data_hr, mask, method=normalization_method)
-            # util.apply_normalization(subject_data_t1, mask, method=normalization_method)
-
             util.apply_clipped_normalization(subject_data_lr, mask, method=normalization_method, deviations=2)
             util.apply_clipped_normalization(subject_data_hr, mask, method=normalization_method, deviations=2)
             util.apply_clipped_normalization(subject_data_t1, mask, method=normalization_method, deviations=2)
 
-            subject_data_lr = np.pad(subject_data_lr,
-                                     pad_width=np.array([[8, 8], [8, 8], [8, 8], [0, 0]]), mode='edge')
+            subject_data_lr = np.pad(subject_data_lr,  # Pad to ensure that there's no possible misshapen patch size
+                                     pad_width=np.array([[patch_size//2, patch_size//2],
+                                                         [patch_size//2, patch_size//2],
+                                                         [patch_size//2, patch_size//2],
+                                                         [0, 0]]), mode='edge')
 
             subject_data_hr = np.pad(subject_data_hr,
-                                     pad_width=np.array([[8, 8], [8, 8], [8, 8], [0, 0]]), mode='edge')
+                                     pad_width=np.array([[patch_size//2, patch_size//2],
+                                                         [patch_size//2, patch_size//2],
+                                                         [patch_size//2, patch_size//2],
+                                                         [0, 0]]), mode='edge')
 
             subject_data_t1 = np.pad(subject_data_t1,
-                                     pad_width=np.array([[8, 8], [8, 8], [8, 8], [0, 0]]), mode='edge')
+                                     pad_width=np.array([[patch_size//2, patch_size//2],
+                                                         [patch_size//2, patch_size//2],
+                                                         [patch_size//2, patch_size//2],
+                                                         [0, 0]]), mode='edge')
 
-            mask = np.pad(mask, pad_width=np.array([[8, 8], [8, 8], [8, 8]]), mode='edge')
+            mask = np.pad(mask, pad_width=np.array([[patch_size//2, patch_size//2],
+                                                    [patch_size//2, patch_size//2],
+                                                    [patch_size//2, patch_size//2]]), mode='edge')
 
             sel_mask_indices = np.zeros(mask.shape, dtype=bool)
 

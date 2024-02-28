@@ -3,7 +3,7 @@ import os.path
 from math import floor
 
 import keras.optimizers.schedules
-from keras.optimizers.schedules import ExponentialDecay, PiecewiseConstantDecay, LearningRateSchedule
+from tensorflow.keras.optimizers.schedules import ExponentialDecay, PiecewiseConstantDecay, LearningRateSchedule
 
 from data_loader import *
 from models import *
@@ -12,7 +12,7 @@ global model
 global optim
 global loss_fn
 
-make_dataset = False
+make_dataset = True
 
 
 def create_optim(args, dataset_size) -> LearningRateSchedule | float:
