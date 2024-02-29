@@ -99,15 +99,13 @@ class PairSequence(keras.utils.Sequence):
                 blur_sigma = 2 * np.log(10) / (2 * np.pi) * upsampling_rate
                 windowsize = np.int32(np.ceil(2.5 * blur_sigma) / 2) * 2 + 1
 
-                subject_data_lr = gaussian_filter(subject_data_lr,
-                                                  sigma=blur_sigma,
-                                                  radius=windowsize,
-                                                  axes=[0, 1, 2])
+                subject_data_lr = util.apply_gaussian_filter(subject_data_lr,
+                                                             kernel_size=windowsize,
+                                                             std_value=blur_sigma)
 
-                subject_data_t1 = gaussian_filter(subject_data_t1,
-                                                  sigma=blur_sigma,
-                                                  radius=windowsize,
-                                                  axes=[0, 1, 2])
+                subject_data_t1 = util.apply_gaussian_filter(subject_data_t1,
+                                                             kernel_size=windowsize,
+                                                             std_value=blur_sigma)
 
             subject_data_lr = zoom(subject_data_lr,
                                    zoom=(1. / upsampling_rate,

@@ -7,6 +7,7 @@ import nibabel as nib
 import os
 
 from tqdm import tqdm
+from scipy.ndimage import convolve
 
 
 def load_dtis(directory: str | os.PathLike[str],
@@ -214,6 +215,25 @@ def apply_clipped_normalization(tensors, mask, method=None, deviations: int = 2)
             return None
 
 
+def apply_gaussian_filter(input: NDArray[float],
+                          kernel_size: int,
+                          std_value: float) -> NDArray[float]:
+
+    kernel_grid = np.copy(np.mgrid[0:kernel_size,
+                                   0:kernel_size,
+                                   0:kernel_size]).transpose((1, 2, 3, 0)) - kernel_size//2
+
+    gaussian_kernel = 1/(np.sqrt(2*np.pi)*std_value)**3 * np.exp(-(kernel_grid[..., 0] ** 2 +
+                                                                   kernel_grid[..., 1] ** 2 +
+                                                                   kernel_grid[..., 2] ** 2) / (2 * std_value ** 2))
+
+    if len(input.shape) == 3:
+        return convolve(input, gaussian_kernel, mode='constant')
+    else:
+        return np.stack([convolve(channel, gaussian_kernel, mode='constant')
+                         for channel in np.moveaxis(input, -1, 0)], axis=-1)
+
+
 def md_fa_cfa(tensors, mask) -> Tuple[NDArray[float],
                                       NDArray[float],
                                       NDArray[float],
@@ -227,10 +247,10 @@ def md_fa_cfa(tensors, mask) -> Tuple[NDArray[float],
     :return: The calculated MD, FA and CFA maps as Numpy arrays
     """
 
-    md = np.zeros(tensors.shape[:-1])
-    fa = np.zeros(tensors.shape[:-1])
-    cfa = np.zeros(tensors.shape[:-1] + (3,))
-    peigv = np.zeros(tensors.shape[:-1] + (3,))
+    md = np.zeros(tensors.shape[:-1], dtype=float)
+    fa = np.zeros(tensors.shape[:-1], dtype=float)
+    cfa = np.zeros(tensors.shape[:-1] + (3,), dtype=float)
+    peigv = np.zeros(tensors.shape[:-1] + (3,), dtype=float)
 
     (x_shape, y_shape, z_shape, _) = tensors.shape
 
