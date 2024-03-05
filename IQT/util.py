@@ -98,16 +98,21 @@ def save_md_fa_cfa(md: NDArray,
                    fa: NDArray,
                    cfa: NDArray,
                    save_file_loc: str | os.PathLike[str],
-                   reference_header_dir: str | os.PathLike[str]) -> None:
+                   reference_header_dir: str | os.PathLike[str] = None,
+                   header=None) -> None:
 
-    if os.path.exists(f"{reference_header_dir}.nii"):
-        reference_file = nib.load(f"{reference_header_dir}.nii")
-    elif os.path.exists(f"{reference_header_dir}.nii.gz"):
-        reference_file = nib.load(f"{reference_header_dir}.nii.gz")
+    if header is None:
+        if os.path.exists(f"{reference_header_dir}.nii"):
+            reference_file = nib.load(f"{reference_header_dir}.nii")
+        elif os.path.exists(f"{reference_header_dir}.nii.gz"):
+            reference_file = nib.load(f"{reference_header_dir}.nii.gz")
+        else:
+            raise FileNotFoundError("No such file in directory: \"{}\"".format(f"{reference_header_dir}.nii.gz"))
+
+        reference_header = reference_file.header
+
     else:
-        raise FileNotFoundError("No such file in directory: \"{}\"".format(f"{reference_header_dir}.nii.gz"))
-
-    reference_header = reference_file.header
+        reference_header = header
 
     nib.save(nib.Nifti1Image(md, None, reference_header),
              os.path.join(save_file_loc, f"md"))
