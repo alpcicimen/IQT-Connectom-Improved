@@ -5,7 +5,7 @@ import keras.layers as KL
 import tensorflow as tf
 from keras.activations import softplus, tanh
 
-from IQT.layers import *
+from layers import *
 
 
 def config_model(args):
@@ -51,6 +51,16 @@ def simple_generator(input_ch, output_ch, ipatch_size=11, f_num=50, layer_num=1,
     model.add(Conv3D(kernel_size=(3, 3, 3), filters=output_ch, padding='valid'))
 
     return keras.Model(input_layer, model(input_layer))
+
+
+def basic_model(ipatch_size: int):
+
+    input_layer = Input(shape=[ipatch_size, ipatch_size, ipatch_size, 6], name='input')
+    input_layer_t1 = Input(shape=[ipatch_size, ipatch_size, ipatch_size, 1], name='input_t1')
+
+    output_layer = input_layer
+
+    return keras.Model([input_layer, input_layer_t1], output_layer)
 
 
 def vdsr(ipatch_size: int | Tuple[int, int, int]):

@@ -84,6 +84,9 @@ def main(args):
         case "l1": loss_fn = l1_loss_fn
         case _: loss_fn = l2_loss_fn
 
+    if not os.path.exists(args.output_dir):
+        os.mkdir(args.output_dir)
+
     if make_dataset:
         print(f"Generating patch triplet library on: {args.scratch_dir}")
 
@@ -168,7 +171,7 @@ def main(args):
 
         train_seq.on_epoch_end()
 
-        model.save_weights(f"/cluster/project9/IQTSuperRes/alp_IQT_Output/Run{run + 1}")
+        model.save_weights(os.path.join(args.output_dir, f"Run{run + 1}"))
 
 
 if __name__ == '__main__':
@@ -180,6 +183,9 @@ if __name__ == '__main__':
 
     parser.add_argument('scratch_dir',
                         help='The scratch directory for temporary file storage.')
+
+    parser.add_argument('output_dir',
+                        help='The output directory for model weights.')
 
     parser.add_argument('--cluster_mode', type=bool, default=False,
                         help='Determines whether tqdm will be silent (to reduce file size)')

@@ -94,9 +94,9 @@ def save_dtis(tensors: NDArray,
                  os.path.join(save_file_loc, f"{dti_file_start}1"))
 
 
-def save_md_fa_cfa(md: NDArray,
-                   fa: NDArray,
-                   cfa: NDArray,
+def save_md_fa_cfa(md: NDArray[Any],
+                   fa: NDArray[Any],
+                   cfa: NDArray[Any],
                    save_file_loc: str | os.PathLike[str],
                    reference_header_dir: str | os.PathLike[str] = None,
                    header=None) -> None:

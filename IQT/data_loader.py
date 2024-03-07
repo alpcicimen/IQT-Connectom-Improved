@@ -11,7 +11,7 @@ from typing import List, Tuple
 
 from tqdm import tqdm
 
-from IQT import util
+import util
 
 from scipy.ndimage import zoom, binary_erosion, gaussian_filter
 
