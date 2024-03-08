@@ -23,7 +23,8 @@ class PairSequence(keras.utils.Sequence):
                       t1_data_dir,
                       subject_labels,
                       pairs_dir,
-                      upsampling_rate=1.25/.7,
+                      downsampling_rate=1.25/.7,
+                      hr_downsampling_rate=1.,
                       hr_filedir=os.path.join('HR', 'dt_b1000_'),
                       t1_filedir=os.path.join('T1w', 'T1w_acpc_dc_restore_brain'),
                       mode='dti',
@@ -42,8 +43,9 @@ class PairSequence(keras.utils.Sequence):
             t1_data_dir: The file directory for the T1w images
             subject_labels: The list of subjects to be utilised
             pairs_dir: The directory where the calculated pairs (or triplets with T1) will be stored at
-            upsampling_rate: The upsampling rate of the neural network.
-                The HR data is *downsampled* to the reciprocal of this rate.
+            downsampling_rate: The downsampling rate of the patch preprocessor.
+                The HR data is *downsampled* by this ratio.
+            HR_downsampling_rate: The downsampling rate of the target \"high resolution\" image.
             hr_filedir: The file directory for individual diffusion tensors.
             t1_filedir: The file directory for the T1w images.
             mode: The diffusion modality.
@@ -74,6 +76,11 @@ class PairSequence(keras.utils.Sequence):
         if cluster_mode:
             cur_time = time.time()
 
+        if hr_downsampling_rate < 1.:  # Up-sampling is not supported! (A value of 1 is allowed)
+            raise ValueError("Only values larger than 1 are supported.")
+
+        assert downsampling_rate > 1.  # Up-sampling is not supported!
+
         for subject_label in subject_labels:
 
             if cluster_mode:
@@ -82,35 +89,40 @@ class PairSequence(keras.utils.Sequence):
             if not os.path.exists(os.path.join(pairs_dir, subject_label)):
                 os.makedirs(os.path.join(pairs_dir, subject_label))
 
-            subject_data_hr = loader_func(
+            subject_data_hr, hr_header = loader_func(
                 os.path.join(diff_data_dir, subject_label),
                 hr_filedir
             )
 
             subject_data_lr = np.copy(subject_data_hr[..., 2:])
 
-            subject_data_t1 = util.load_structural(
+            subject_data_t1, t1_header = util.load_structural(
                 os.path.join(t1_data_dir, subject_label),
                 t1_filedir
             )
 
+            t1_downsample_rate = hr_header.get_zooms()[0] / t1_header.get_zooms()[0]
+
             if apply_blurring:
 
-                blur_sigma = 2 * np.log(10) / (2 * np.pi) * upsampling_rate
-                windowsize = np.int32(np.ceil(2.5 * blur_sigma) / 2) * 2 + 1
+                if hr_downsampling_rate > 1.:
+                    subject_data_hr = util.apply_gaussian_filter(subject_data_hr, hr_downsampling_rate)
 
-                subject_data_lr = util.apply_gaussian_filter(subject_data_lr,
-                                                             kernel_size=windowsize,
-                                                             std_value=blur_sigma)
+                subject_data_lr = util.apply_gaussian_filter(subject_data_lr, downsampling_rate * hr_downsampling_rate)
+                subject_data_t1 = util.apply_gaussian_filter(subject_data_t1, t1_downsample_rate * hr_downsampling_rate)
 
-                subject_data_t1 = util.apply_gaussian_filter(subject_data_t1,
-                                                             kernel_size=windowsize,
-                                                             std_value=blur_sigma)
+            if hr_downsampling_rate > 1.:
+                subject_data_hr = zoom(subject_data_hr,
+                                       zoom=(1. / hr_downsampling_rate,
+                                             1. / hr_downsampling_rate,
+                                             1. / hr_downsampling_rate, 1),
+                                       order=1,
+                                       prefilter=False)
 
             subject_data_lr = zoom(subject_data_lr,
-                                   zoom=(1. / upsampling_rate,
-                                         1. / upsampling_rate,
-                                         1. / upsampling_rate, 1),
+                                   zoom=(1. / (hr_downsampling_rate * downsampling_rate),
+                                         1. / (hr_downsampling_rate * downsampling_rate),
+                                         1. / (hr_downsampling_rate * downsampling_rate), 1),
                                    order=1,
                                    prefilter=False)
 
@@ -122,7 +134,7 @@ class PairSequence(keras.utils.Sequence):
             target_scales = (np.array(subject_data_hr.shape[:-1] + (1,)) /
                              np.array(subject_data_t1.shape))
 
-            mask = np.array(subject_data_hr[..., 0] > -1, dtype=bool)
+            mask = np.array(subject_data_hr[..., 0] >= 0, dtype=bool)
 
             if mask_erosion:
                 mask = binary_erosion(mask, np.ones((mask_erosion, mask_erosion, mask_erosion)))
@@ -264,7 +276,7 @@ class PairSequence(keras.utils.Sequence):
 
     def sample_slice(self, subj, *_):
 
-        patch_indx = '400.npy'
+        patch_indx = '100.npy'
 
         patch = np.load(os.path.join(self.pair_dir, self.subject_labels[subj], patch_indx))
 
@@ -316,7 +328,7 @@ class DataLoader:
             case "dti":
                 for subject in self.subject_labels:
 
-                    subject_data = util.load_dtis(
+                    subject_data, _ = util.load_dtis(
                         os.path.join(self.data_dir, subject, self.subdir),
                         self.file_head
                     )
@@ -347,7 +359,7 @@ class DataLoader:
 
                 for subject in self.subject_labels:
 
-                    subject_data = util.load_structural(
+                    subject_data, _ = util.load_structural(
                         os.path.join(self.data_dir, subject, self.subdir),
                         self.file_head
                     )

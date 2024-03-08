@@ -4,6 +4,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 import nibabel as nib
+from nibabel.nifti1 import Nifti1Header
+from nibabel.nifti2 import Nifti2Header
 import os
 
 from tqdm import tqdm
@@ -12,8 +14,14 @@ from scipy.ndimage import convolve
 
 def load_dtis(directory: str | os.PathLike[str],
               file_head: str,
-              only_tensors=False) -> np.ndarray:
+              only_tensors=False) -> Tuple[NDArray[Any], Nifti1Header | Nifti2Header]:
     subject_dts = []
+
+    if os.path.exists(os.path.join(directory, f"{file_head}2.nii")):
+        header = nib.load(os.path.join(directory, f"{file_head}2.nii")).header
+    else:
+        raise FileNotFoundError("No such files in directory: \'{}\'"
+                                .format(os.path.join(directory, f"{file_head}2.nii")))
 
     for i in range(3 if only_tensors else 1, 9):
         if os.path.exists(os.path.join(directory, f"{file_head}{i}.nii")):
@@ -27,11 +35,11 @@ def load_dtis(directory: str | os.PathLike[str],
         subject_dts.append(subj)
 
     merged_dts = np.stack(subject_dts, axis=-1)
-    return merged_dts
+    return merged_dts, header
 
 
 def load_maps(directory: str | os.PathLike[str],
-              file_head: str) -> np.ndarray:
+              file_head: str) -> Tuple[NDArray[Any], None]:
 
     subject_propagators = []
 
@@ -47,27 +55,30 @@ def load_maps(directory: str | os.PathLike[str],
         subject_propagators.append(prop)
 
     merged_maps = np.stack(subject_propagators, axis=-1)
-    return merged_maps
+    return merged_maps, None
 
 
 def load_structural(directory: str | os.PathLike[str],
-                    file_head: str) -> np.ndarray:
+                    file_head: str) -> Tuple[NDArray[Any], Nifti1Header | Nifti2Header]:
 
     subj = None
+    header = None
 
     if os.path.exists(os.path.join(directory, f"{file_head}.nii")):
-        subj = np.array(
-            nib.load(os.path.join(directory, f"{file_head}.nii")).dataobj
-        )[..., None]  # For channels in NN. Data format is [X, Y, Z, C]
+        subj = nib.load(os.path.join(directory, f"{file_head}.nii"))
+        header = subj.header
+
+        subj = np.array(subj.dataobj)[..., None]  # For channels in NN. Data format is [X, Y, Z, C]
     elif os.path.exists(os.path.join(directory, f"{file_head}.nii.gz")):
-        subj = np.array(
-            nib.load(os.path.join(directory, f"{file_head}.nii.gz")).dataobj
-        )[..., None]  # For channels in NN. Data format is [X, Y, Z, C]
+        subj = nib.load(os.path.join(directory, f"{file_head}.nii.gz"))
+        header = subj.header
+
+        subj = np.array(subj.dataobj)[..., None]  # For channels in NN. Data format is [X, Y, Z, C]
     else:
         raise FileNotFoundError("No such files in directory: \"{}\""
                                 .format(os.path.join(directory, f"{file_head}.nii.gz")))
 
-    return subj
+    return subj, header
 
 
 def save_dtis(tensors: NDArray,
@@ -220,9 +231,10 @@ def apply_clipped_normalization(tensors, mask, method=None, deviations: int = 2)
             return None
 
 
-def apply_gaussian_filter(input: NDArray[float],
-                          kernel_size: int,
-                          std_value: float) -> NDArray[float]:
+def apply_gaussian_filter(input: NDArray[float], downsample_rate) -> NDArray[float]:
+
+    std_value = 2 * np.log(10) / (2 * np.pi) * downsample_rate
+    kernel_size = np.int32(np.ceil(2.5 * std_value) / 2) * 2 + 1
 
     kernel_grid = np.copy(np.mgrid[0:kernel_size,
                                    0:kernel_size,

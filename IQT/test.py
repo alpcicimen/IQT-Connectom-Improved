@@ -22,7 +22,7 @@ import tensorflow as tf
 
 patch_size = 16
 overlap = 4
-upsamp_rate = 1.25/0.7
+upsamp_rate = 1.6
 model: keras.Model = unet3d_t1(patch_size, patch_size)
 # model: keras.Model = unet3d(patch_size)
 
@@ -67,7 +67,7 @@ def main():
 
         print(f"Current Subject: {subj_id}")
 
-        test_data = util.load_dtis(os.path.join(data_dir, subj_id, data_subdir), "dt_b1000_")
+        test_data, _ = util.load_dtis(os.path.join(data_dir, subj_id, data_subdir), "dt_b1000_")
 
         mask = test_data[..., 0] > -1
 
@@ -75,11 +75,7 @@ def main():
 
         test_data_rescaled = test_data[..., 2:]
 
-        sigma = 2 * np.log(10) / (2 * np.pi) * upsamp_rate
-        windowsize = np.int32(np.ceil(2.5 * sigma) / 2) * 2 + 1
-        test_data_rescaled = util.apply_gaussian_filter(test_data_rescaled,
-                                                        windowsize,
-                                                        sigma)
+        test_data_rescaled = util.apply_gaussian_filter(test_data_rescaled, upsamp_rate)
 
         test_data_rescaled = zoom(test_data_rescaled,
                                   (1/upsamp_rate, 1/upsamp_rate, 1/upsamp_rate, 1),
@@ -90,18 +86,14 @@ def main():
 
         test_data = zoom(test_data_rescaled, dti_rescale_factor, order=1, prefilter=False)
 
-        target_data = util.load_dtis(os.path.join(data_dir, subj_id, data_subdir),
-                                     "dt_b1000_")
-        test_data_t1 = util.load_structural(os.path.join(t1_data_dir, subj_id, t1_subdir),
-                                            "T1w_acpc_dc_restore_brain")
+        target_data, _ = util.load_dtis(os.path.join(data_dir, subj_id, data_subdir),
+                                        "dt_b1000_")
+        test_data_t1, _ = util.load_structural(os.path.join(t1_data_dir, subj_id, t1_subdir),
+                                               "T1w_acpc_dc_restore_brain")
 
         t1_rescale_factor = np.array(target_data.shape[:-1] + (1,)) / np.array(test_data_t1.shape)
 
-        sigma = 2 * np.log(10) / (2 * np.pi) * (1.25/0.7)
-        windowsize = np.int32(np.ceil(2.5 * sigma) / 2) * 2 + 1
-        test_data_t1 = util.apply_gaussian_filter(test_data_t1,
-                                                  windowsize,
-                                                  sigma)
+        test_data_t1 = util.apply_gaussian_filter(test_data_t1, 1.25/0.7)
 
         t1_rescaled = zoom(test_data_t1, t1_rescale_factor, order=1)
 
@@ -129,7 +121,7 @@ def main():
         norm_metrics_target = util.apply_clipped_normalization(target_tensors, mask, 'minmax')
         norm_metrics_t1 = util.apply_clipped_normalization(t1_rescaled, mask, 'minmax')
 
-        for (i, j, k) in tqdm(run_indices, disable=True):
+        for (i, j, k) in tqdm(run_indices, disable=False):
 
             model_output[i - patch_size//2 + overlap:i + patch_size//2 - overlap,
                          j - patch_size//2 + overlap:j + patch_size//2 - overlap,
