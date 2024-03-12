@@ -145,9 +145,9 @@ def main():
         util.revert_normalization(model_output_rescaled, mask, norm_metrics_target, method='minmax')
         util.revert_normalization(input_data_copy, mask, norm_metrics_input, method='minmax')
 
-        md_orig, fa_orig, cfa_orig, eigv_orig = util.md_fa_cfa(target_data_copy, mask)
-        md_in, fa_in, cfa_in, eigv_in = util.md_fa_cfa(input_data_copy, mask)
-        md_gen, fa_gen, cfa_gen, eigv_gen = util.md_fa_cfa(model_output_rescaled, mask)
+        md_orig, fa_orig, cfa_orig, eigv_orig = util.md_fa_cfa(target_data_copy, mask, cluster_mode=True)
+        md_in, fa_in, cfa_in, eigv_in = util.md_fa_cfa(input_data_copy, mask, cluster_mode=True)
+        md_gen, fa_gen, cfa_gen, eigv_gen = util.md_fa_cfa(model_output_rescaled, mask, cluster_mode=True)
 
         linear_dt_rmse = dt_rmse(target_data_copy[mask], input_data_copy[mask])
         model_dt_rmse = dt_rmse(target_data_copy[mask], model_output_rescaled[mask])

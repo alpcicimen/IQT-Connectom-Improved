@@ -4,81 +4,70 @@ import numpy as np
 from numpy.typing import NDArray
 
 import nibabel as nib
-from nibabel.nifti1 import Nifti1Header
-from nibabel.nifti2 import Nifti2Header
+from nibabel.nifti1 import Nifti1Header, Nifti1Image
+from nibabel.nifti2 import Nifti2Header, Nifti2Image
 import os
 
 from tqdm import tqdm
 from scipy.ndimage import convolve
 
 
-def load_dtis(directory: str | os.PathLike[str],
-              file_head: str,
-              only_tensors=False) -> Tuple[NDArray[Any], Nifti1Header | Nifti2Header]:
-    subject_dts = []
+def __load_nii__(directory: str | os.PathLike[str], filename: str) -> Nifti1Image | Nifti2Image:
 
-    if os.path.exists(os.path.join(directory, f"{file_head}2.nii")):
-        header = nib.load(os.path.join(directory, f"{file_head}2.nii")).header
+    if os.path.exists(os.path.join(directory, f"{filename}.nii")):
+        return nib.load(os.path.join(directory, f"{filename}.nii"))
+    elif os.path.exists(os.path.join(directory, f"{filename}.nii.gz")):
+        return nib.load(os.path.join(directory, f"{filename}.nii.gz"))
     else:
         raise FileNotFoundError("No such files in directory: \'{}\'"
-                                .format(os.path.join(directory, f"{file_head}2.nii")))
+                                .format(os.path.join(directory, f"{filename}.nii")))
 
-    for i in range(3 if only_tensors else 1, 9):
-        if os.path.exists(os.path.join(directory, f"{file_head}{i}.nii")):
-            subj = np.array(nib.load(os.path.join(directory, f"{file_head}{i}.nii")).dataobj)
-        elif os.path.exists(os.path.join(directory, f"{file_head}{i}.nii.gz")):
-            subj = np.array(nib.load(os.path.join(directory, f"{file_head}{i}.nii.gz")).dataobj)
-        else:
-            raise FileNotFoundError("No such files in directory: \'{}\'"
-                                    .format(os.path.join(directory, f"{file_head}{i}.nii")))
 
-        subject_dts.append(subj)
+def load_dtis(directory: str | os.PathLike[str],
+              file_head: str) -> Tuple[NDArray[Any], Nifti1Header | Nifti2Header]:
+    """
+    Loads the (currently preprocessed) DTI inputs as a Numpy array of shape [H, W, D, 8] including a sample header.
+    The files are numbered from 1 to 8, where 1 corresponds to the brain mask, 2 the original image intensity S_0,
+    and numbers 3-8 the diffusion tensors D_xx, D_xy, D_xz, D_yy, D_yz, D_zz respectively.
+
+    TODO Move the processing of dwis into python?
+
+    :param directory: The parent directory to load the dtis from
+    :param file_head: The file header. Files should be of format **header_x** where x is the file numbers 1-8.
+        Every file from 1-8 has to be present!
+    :return: The combined diffusion tensors as a numpy array, together with a sample header
+    """
+
+    subject_dts = []
+
+    header = __load_nii__(directory, f"{file_head}2").header
+
+    for i in range(1, 9):
+        subject_dts.append(np.array(__load_nii__(directory, f"{file_head}{i}").dataobj))
 
     merged_dts = np.stack(subject_dts, axis=-1)
     return merged_dts, header
 
 
 def load_maps(directory: str | os.PathLike[str],
-              file_head: str) -> Tuple[NDArray[Any], None]:
+              file_head: str) -> Tuple[NDArray[Any], Nifti1Header | Nifti2Header]:
 
     subject_propagators = []
 
-    for i in range(1, 23):
-        if os.path.exists(os.path.join(directory, f"{file_head}{i}.nii")):
-            prop = np.array(nib.load(os.path.join(directory, f"{file_head}{i}.nii")).dataobj)
-        elif os.path.exists(os.path.join(directory, f"{file_head}{i}.nii.gz")):
-            prop = np.array(nib.load(os.path.join(directory, f"{file_head}{i}.nii.gz")).dataobj)
-        else:
-            raise FileNotFoundError("No such files in directory: \'{}\'"
-                                    .format(os.path.join(directory, f"{file_head}{i}.nii")))
+    header = __load_nii__(directory, f"{file_head}2").header
 
-        subject_propagators.append(prop)
+    for i in range(1, 23):
+        subject_propagators.append(np.array(__load_nii__(directory, f"{file_head}{i}").dataobj))
 
     merged_maps = np.stack(subject_propagators, axis=-1)
-    return merged_maps, None
+    return merged_maps, header
 
 
 def load_structural(directory: str | os.PathLike[str],
                     file_head: str) -> Tuple[NDArray[Any], Nifti1Header | Nifti2Header]:
 
-    subj = None
-    header = None
-
-    if os.path.exists(os.path.join(directory, f"{file_head}.nii")):
-        subj = nib.load(os.path.join(directory, f"{file_head}.nii"))
-        header = subj.header
-
-        subj = np.array(subj.dataobj)[..., None]  # For channels in NN. Data format is [X, Y, Z, C]
-    elif os.path.exists(os.path.join(directory, f"{file_head}.nii.gz")):
-        subj = nib.load(os.path.join(directory, f"{file_head}.nii.gz"))
-        header = subj.header
-
-        subj = np.array(subj.dataobj)[..., None]  # For channels in NN. Data format is [X, Y, Z, C]
-    else:
-        raise FileNotFoundError("No such files in directory: \"{}\""
-                                .format(os.path.join(directory, f"{file_head}.nii.gz")))
-
-    return subj, header
+    nii = __load_nii__(directory, file_head)
+    return np.array(nii.dataobj)[..., None], nii.header
 
 
 def save_dtis(tensors: NDArray,
@@ -251,16 +240,18 @@ def apply_gaussian_filter(input: NDArray[float], downsample_rate) -> NDArray[flo
                          for channel in np.moveaxis(input, -1, 0)], axis=-1)
 
 
-def md_fa_cfa(tensors, mask) -> Tuple[NDArray[float],
-                                      NDArray[float],
-                                      NDArray[float],
-                                      NDArray[float]]:
+def md_fa_cfa(tensors, mask,
+              cluster_mode=False) -> Tuple[NDArray[float],
+                                           NDArray[float],
+                                           NDArray[float],
+                                           NDArray[float]]:
     """
     Generate the mean diffusivity (MD), fractional anisotropy (FA) and coloured fractional anisotropy (CFA) images from
     the tensor data. The non-masked regions are not evaluated.
 
     :param tensors: Tensor values to evaluate MD, FA and CFA from
     :param mask: The mask for which voxels have to be calculated for
+    :param cluster_mode: Boolean value that determines whether tqdm progress bars will be enabled or not
     :return: The calculated MD, FA and CFA maps as Numpy arrays
     """
 
@@ -271,7 +262,7 @@ def md_fa_cfa(tensors, mask) -> Tuple[NDArray[float],
 
     (x_shape, y_shape, z_shape, _) = tensors.shape
 
-    for i in tqdm(range(x_shape)):
+    for i in tqdm(range(x_shape), disable=cluster_mode):
         for j in range(y_shape):
             for k in range(z_shape):
                 if mask[i, j, k]:

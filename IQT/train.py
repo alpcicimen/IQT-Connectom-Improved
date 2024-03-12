@@ -15,26 +15,28 @@ global loss_fn
 make_dataset = True
 
 
-def create_optim(args, dataset_size) -> LearningRateSchedule | float:
-
+def create_optim(lr,
+                 lr_decay,
+                 epochs,
+                 dataset_size) -> LearningRateSchedule | float:
     global optim
 
-    match args.lr_decay:
+    match lr_decay:
 
         case 'exponential':
-            _lr = ExponentialDecay(initial_learning_rate=args.lr,
-                                   decay_steps=10*dataset_size,
+            _lr = ExponentialDecay(initial_learning_rate=lr,
+                                   decay_steps=10 * dataset_size,
                                    decay_rate=0.5)
 
         case 'constant':
-            boundaries = (np.arange(0, args.epochs//10) + 1)*10*dataset_size
-            values = np.power(0.5, range(0, args.epochs//10 + 1)) * args.lr
+            boundaries = (np.arange(0, epochs // 10) + 1) * 10 * dataset_size
+            values = np.power(0.5, range(0, epochs // 10 + 1)) * lr
 
             _lr = PiecewiseConstantDecay(boundaries=boundaries.tolist(),
                                          values=values.tolist())
 
         case _:
-            _lr = args.lr
+            _lr = lr
 
     optim = keras.optimizers.Adam(learning_rate=_lr)
 
@@ -72,49 +74,72 @@ def val_step(target_batch, input_batch, t1_batch):
     return loss_fn(target_batch, model_output)
 
 
-def main(args):
-
+def main(model_type,
+         patch_size,
+         loss_type,
+         output_dir,
+         dt_data_dir,
+         t1_data_dir,
+         subjects,
+         scratch_dir,
+         downsampling_rate,
+         hr_subdir,
+         hr_file_head,
+         t1_subdir,
+         t1_file_head,
+         mask_erosion,
+         cluster_mode,
+         batch_size,
+         lr,
+         lr_decay,
+         epochs,
+         log_dir):
     global model
     global loss_fn
 
     time_start = 0
-    model = config_model(args)
+    model = config_model(model_type,
+                         patch_size=patch_size[0],
+                         t1_patch_size=patch_size[1] if len(patch_size) > 1 else patch_size[0])
 
-    match str(args.loss_type).lower():
-        case "l1": loss_fn = l1_loss_fn
-        case _: loss_fn = l2_loss_fn
+    match str(loss_type).lower():
+        case "l1":
+            loss_fn = l1_loss_fn
+        case _:
+            loss_fn = l2_loss_fn
 
-    if not os.path.exists(args.output_dir):
-        os.mkdir(args.output_dir)
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
 
     if make_dataset:
-        print(f"Generating patch triplet library on: {args.scratch_dir}")
+        print(f"Generating patch triplet library on: {scratch_dir}")
 
-        PairSequence.generate_data(diff_data_dir=args.dt_data_dir,
-                                   t1_data_dir=args.t1_data_dir,
-                                   subject_labels=args.subjects,
-                                   pairs_dir=args.scratch_dir,
-                                   downsampling_rate=1.6,
-                                   hr_downsampling_rate=1.6,
-                                   hr_filedir=os.path.join(args.hr_subdir, args.hr_file_head),
-                                   t1_filedir=os.path.join(args.t1_subdir, args.t1_file_head),
+        PairSequence.generate_data(diff_data_dir=dt_data_dir,
+                                   t1_data_dir=t1_data_dir,
+                                   subject_labels=subjects,
+                                   pairs_dir=scratch_dir,
+                                   downsampling_rate=downsampling_rate[0],
+                                   hr_downsampling_rate=1. if len(downsampling_rate) <= 1 else downsampling_rate[1],
+                                   hr_filedir=os.path.join(hr_subdir, hr_file_head),
+                                   t1_filedir=os.path.join(t1_subdir, t1_file_head),
                                    mode='dti',
                                    normalization_method='minmax',
                                    patch_spacing=8,
-                                   patch_size=16,
-                                   mask_erosion=args.mask_erosion,
-                                   cluster_mode=args.cluster_mode)
+                                   patch_size=patch_size[0],
+                                   mask_erosion=mask_erosion,
+                                   cluster_mode=cluster_mode)
 
         print("Generated patch triplets.")
 
-    train_seq = PairSequence(pair_dir=args.scratch_dir,
-                             subject_labels=args.subjects,
-                             batch_size=args.batch_size,
-                             pairs_per_subject=200)
+    train_seq = PairSequence(pair_dir=scratch_dir,
+                             subject_labels=subjects,
+                             batch_size=batch_size,
+                             pairs_per_subject=200,
+                             t1_postprocess=True)
 
-    _lr = create_optim(args, len(train_seq))
+    _lr = create_optim(lr, lr_decay, epochs, len(train_seq))
 
-    summary_writer = tf.summary.create_file_writer(args.log_dir)
+    summary_writer = tf.summary.create_file_writer(log_dir)
 
     (sample_t, sample_i, sample_t1) = train_seq.sample_slice(0, (60, 60, 60))
 
@@ -122,29 +147,28 @@ def main(args):
         tf.summary.image('Target Slice', sample_t[:, :, 7, :, 0:1], step=0)
         tf.summary.image('Input T1w Slice', sample_t1[:, :, 7, :, :], step=0)
 
-    for run in range(args.epochs):
+    for run in range(epochs):
 
         train_loss = 0
         val_loss = 0
 
         with (summary_writer.as_default()):
             tf.summary.scalar('Loss rate at start',
-                              _lr if isinstance(_lr, float) else _lr(len(train_seq)*run + 1), step=run)
+                              _lr if isinstance(_lr, float) else _lr(len(train_seq) * run + 1), step=run)
 
         train_size = floor(0.9 * train_seq.__len__())
 
         val_size = train_seq.__len__() - train_size
 
-        if args.cluster_mode:
+        if cluster_mode:
             time_start = time.time()
 
         for batch, (target_batch, (input_batch, t1_batch)) \
-                in enumerate(tqdm(train_seq, disable=args.cluster_mode)):
+                in enumerate(tqdm(train_seq, disable=cluster_mode)):
 
             if batch <= train_size:
 
                 closs = train_step(target_batch, input_batch, t1_batch)
-
                 train_loss += closs
 
             else:
@@ -152,11 +176,7 @@ def main(args):
                 closs = val_step(target_batch, input_batch, t1_batch)
                 val_loss += closs
 
-        # 2.2, 1.25, 0.7 -> 44, 25, 14
-        # 44 Patch size on T1w, 25 PS on HR, 14 PS on LR
-        # 25 -> 14 setup
-
-        if args.cluster_mode:
+        if cluster_mode:
             print("Time taken for run {}: {} seconds.".format((run + 1), time.time() - time_start))
 
         print(f"Run {run + 1} mean training loss: {train_loss / train_size}")
@@ -172,14 +192,17 @@ def main(args):
 
         train_seq.on_epoch_end()
 
-        model.save_weights(os.path.join(args.output_dir, f"Run{run + 1}"))
+        model.save_weights(os.path.join(output_dir, f"Run{run + 1}"))
 
 
 if __name__ == '__main__':
+
+    # --------------------------------------------- Mandatory Arguments ------------------------------------------------
+
     parser = argparse.ArgumentParser(prog='IQT-Training',
                                      description='The main training script for IQT.')
 
-    parser.add_argument('model',
+    parser.add_argument('model_type',
                         help="The neural network model to utilise. Options: [ESPCN, ESPCN-T1, UNet, UNet-T1]")
 
     parser.add_argument('scratch_dir',
@@ -188,10 +211,34 @@ if __name__ == '__main__':
     parser.add_argument('output_dir',
                         help='The output directory for model weights.')
 
+########################################################################################################################
+
+    # ----------------------------------------------- I/O Arguments ----------------------------------------------------
+
     parser.add_argument('--cluster_mode', type=bool, default=False,
                         help='Determines whether tqdm will be silent (to reduce file size)')
 
-    parser.add_argument('--log_dir', type=str, default='/home/acicimen/IQT-Connectom-Improved/logs/run_results')
+    parser.add_argument('--log_dir', type=str,
+                        default='/home/acicimen/IQT-Connectom-Improved/logs/run_results')
+
+    parser.add_argument('--dt_data_dir',
+                        default='/SAN/vision/hcp/DCA_HCP.2013.3_Proc')
+    parser.add_argument('--t1_data_dir',
+                        default='/cluster/project0/IQT_Nigeria/HCP_t1t2_ALL/sim')
+
+    parser.add_argument('--hr_subdir',
+                        default='T1w/Diffusion')
+    parser.add_argument('--hr_file_head',
+                        default='dt_b1000_')
+
+    parser.add_argument('--t1_subdir',
+                        default='T1w')
+    parser.add_argument('--t1_file_head',
+                        default='T1w_acpc_dc_restore_brain')
+
+########################################################################################################################
+
+    # -------------------------------------------- Training Arguments --------------------------------------------------
 
     parser.add_argument('--epochs', type=int, default=60,
                         help='Number of epochs to run the model for. Default: 10')
@@ -203,35 +250,34 @@ if __name__ == '__main__':
     parser.add_argument('--lr_decay', default=None,
                         help='The learning decay type. Possible values: [(None), constant, exponential]')
 
-    parser.add_argument('--dt_data_dir', default='/SAN/vision/hcp/DCA_HCP.2013.3_Proc')
-    parser.add_argument('--t1_data_dir', default='/cluster/project0/IQT_Nigeria/HCP_t1t2_ALL/sim')
-
     parser.add_argument('--subjects', nargs='+',
                         default=["100307", "131924", "162733", "210617", "541943", "792564", "100408",
                                  "133625", "163129", "211417", "545345", "826353", "101915", "133827",
                                  "163432", "211720", "547046", "856766", "102816", "133928", "165840",
                                  "212318", "559053", "857263", "103414", "214019", "561242", "103515",
                                  "134324", "167743", "214221", "570243", "859671", "103818", "135932"])
-            # "169343", "214423", "861456", "105115", "136833", "172332", "579665",
-            # "865363", "105216", "137128", "175439", "217126", "581349", "871964",
-            # "106016", "138231", "176542", "217429", "586460", "872158", "106319",
-            # "138534", "177746", "221319", "598568", "877168", "110411", "139637",
-            # "182739", "239944", "111312", "140824", "182840", "245333", "645551",
-            # "889579", "111514", "142828", "185139", "246133", "111716", "143325",
-            # "188347", "249947", "894673", "112819", "144226", "189450", "250427",
-            # "665254", "896879", "113215", "148032", "190031", "255639", "672756",
-            # "899885", "113619", "148335", "191437", "280739", "677968"])
+
+    parser.add_argument('--patch_size', type=int, nargs='+', default=[16])
+    #  Unfortunately bash does not natively support floating point operations, so a possible workaround would be to
+    #  calculate the proper floating point before supplying it as a command-line argument.
+    parser.add_argument('--downsampling_rate', type=float, nargs='+', default=[1.25/0.7, 1.])
 
     parser.add_argument('--batch_size', type=int, default=6)
+    parser.add_argument('--mask_erosion', type=int, default=5)
 
-    parser.add_argument('--hr_subdir', default='T1w/Diffusion')
-    parser.add_argument('--hr_file_head', default='dt_b1000_')
-
-    parser.add_argument('--t1_subdir', default='T1w')
-    parser.add_argument('--t1_file_head', default='T1w_acpc_dc_restore_brain')
-
-    parser.add_argument('--mask_erosion', default=2)
+########################################################################################################################
 
     args = parser.parse_args()
 
-    main(args)
+    main(**vars(args))
+
+# Unused Subjects
+# "169343", "214423", "861456", "105115", "136833", "172332", "579665",
+    # "865363", "105216", "137128", "175439", "217126", "581349", "871964",
+    # "106016", "138231", "176542", "217429", "586460", "872158", "106319",
+    # "138534", "177746", "221319", "598568", "877168", "110411", "139637",
+    # "182739", "239944", "111312", "140824", "182840", "245333", "645551",
+    # "889579", "111514", "142828", "185139", "246133", "111716", "143325",
+    # "188347", "249947", "894673", "112819", "144226", "189450", "250427",
+    # "665254", "896879", "113215", "148032", "190031", "255639", "672756",
+    # "899885", "113619", "148335", "191437", "280739", "677968"])

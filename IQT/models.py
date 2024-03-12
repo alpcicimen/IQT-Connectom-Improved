@@ -8,25 +8,20 @@ from keras.activations import softplus, tanh
 from layers import *
 
 
-def config_model(args):
+def config_model(model_type,
+                 patch_size=16,
+                 t1_patch_size=16):
 
-    match args.model:
+    match model_type:
 
         case "UNet-T1":
-
-            args.patch_size = 16
-            args.t1_patch_size = 16
-
-            return unet3d_t1_v2(args.patch_size, args.t1_patch_size)
+            return unet3d_t1_v2(patch_size, t1_patch_size)
 
         case "UNet":
-
-            args.patch_size = 16
-
-            return unet3d_not1_v2(args.patch_size)
+            return unet3d_not1_v2(patch_size)
 
         case _:
-            raise ValueError(f"No model configuration for \"{args.model}\" found!")
+            raise ValueError(f"No model configuration for \"{model_type}\" found!")
 
 
 def simple_generator(input_ch, output_ch, ipatch_size=11, f_num=50, layer_num=1, ds=2):
@@ -115,7 +110,7 @@ def vdsr_t1(ipatch_size: int | Tuple[int, int, int],
                                ReLU(),
                                Conv3D(kernel_size=(3, 3, 3), filters=6, padding='same')])
 
-    model_t1 = Sequential()
+    seq = []
 
     ksize = 5
 
@@ -124,12 +119,13 @@ def vdsr_t1(ipatch_size: int | Tuple[int, int, int],
     while t1_size > ipatch_size:
         fsize = 64 if calc_output(t1_size, filter_size=ksize) > ipatch_size else 6
 
-        model_t1.add(Sequential([
-            Conv3D(kernel_size=ksize, filters=fsize, padding='valid'),
-            ReLU()]))
+        seq.append(Conv3D(kernel_size=ksize, filters=fsize, padding='valid'))
+        seq.append(ReLU())
         t1_size = calc_output(t1_size, filter_size=ksize)
 
-    output = input_layer + model(input_layer) + model_t1(t1_layer)
+    model_t1 = Sequential(seq)
+
+    output = input_layer + tanh(model(input_layer)) + tanh(model_t1(t1_layer))
 
     return keras.Model([input_layer, t1_layer], output)
 
@@ -149,11 +145,11 @@ def unet3d(ipatch_size):
                              Conv3D(kernel_size=5, filters=6*4, padding='same'),
                              ReLU()])(i_layer)
 
-    d_layer = unet_downsample_layer(conv_input, kernel_size=5, filter_size=6 * 4 * 4)
-    d_layer2 = unet_downsample_layer(d_layer, kernel_size=5, filter_size=6 * 4 * 4 * 4)
+    d_layer = unet_downsample_layer(conv_input, kernel_size=5, filter_size=6 * 6 * 6)
+    d_layer2 = unet_downsample_layer(d_layer, kernel_size=5, filter_size=6 * 6 * 6 * 6)
 
-    u_layer1 = unet_upsample_layer(d_layer2, concat_layer=d_layer, filter_size=6 * 4 * 4, kernel_size=5)
-    u_layer2 = unet_upsample_layer(u_layer1, concat_layer=conv_input, filter_size=6 * 4, kernel_size=5)
+    u_layer1 = unet_upsample_layer(d_layer2, concat_layer=d_layer, filter_size=6 * 6 * 6, kernel_size=5)
+    u_layer2 = unet_upsample_layer(u_layer1, concat_layer=conv_input, filter_size=6 * 6, kernel_size=5)
 
     o_layer = Conv3D(kernel_size=5, filters=6, padding='same')(u_layer2)
 
@@ -307,15 +303,15 @@ def unet3d_t1_v3(ipatch_size,
                                __tw_patch_size,
                                __tw_patch_size, 1], name='input_t1', dtype=tf.float32)
 
-    conv_input = Sequential([Conv3D(kernel_size=5, filters=6 * (ch_mult_per_layer ** 1), padding='same'),
-                             LeakyReLU(),
-                             Conv3D(kernel_size=5, filters=6 * (ch_mult_per_layer ** 1), padding='same')])(i_layer)
+    conv_input = Sequential([Conv3D(kernel_size=3, filters=6 * (ch_mult_per_layer ** 1), padding='same'),
+                             ELU(),
+                             Conv3D(kernel_size=3, filters=6 * (ch_mult_per_layer ** 1), padding='same')])(i_layer)
 
-    t1_input = Sequential([Conv3D(kernel_size=5,
+    t1_input = Sequential([Conv3D(kernel_size=3,
                                   strides=(2 if tw_patch_size is None else 1),  # Do not apply stride on custom T1 sizes
                                   filters=6 * (ch_mult_per_layer ** 1), padding='same'),
-                           LeakyReLU(),
-                           Conv3D(kernel_size=5, filters=6 * ch_mult_per_layer ** 1, padding='same')])(t1_layer)
+                           ELU(),
+                           Conv3D(kernel_size=3, filters=6 * ch_mult_per_layer ** 1, padding='same')])(t1_layer)
 
     t1_layers = []
     d_layers = []
@@ -324,12 +320,12 @@ def unet3d_t1_v3(ipatch_size,
     d_layers.append(conv_input)
 
     for n in range(1, num_layers+1):
-        t1_layers.append(unet_downsample_layer_v2(LeakyReLU()(t1_layers[-1]),
-                                                  kernel_size=5,
+        t1_layers.append(unet_downsample_layer_v3(ELU()(t1_layers[-1]),
+                                                  kernel_size=3,
                                                   filter_size=6 * (ch_mult_per_layer ** (n+1)),
                                                   rep_layers=num_rep_layers))
-        d_layers.append(unet_downsample_layer_v2(LeakyReLU()(d_layers[-1]),
-                                                 kernel_size=5,
+        d_layers.append(unet_downsample_layer_v3(ELU()(d_layers[-1]),
+                                                 kernel_size=3,
                                                  filter_size=6 * (ch_mult_per_layer ** (n+1)),
                                                  rep_layers=num_rep_layers))
 
@@ -338,18 +334,18 @@ def unet3d_t1_v3(ipatch_size,
     for _ in range(num_rep_layers):
         d_layer_n = Conv3D(kernel_size=3,
                            filters=6 * (ch_mult_per_layer ** (num_layers + 1)),
-                           padding='same')(LeakyReLU()(d_layer_n))
+                           padding='same')(ELU()(d_layer_n))
 
     for n in range(1, num_layers+1):
-        d_layer_n = unet_upsample_layer_v2(d_layer_n,
+        d_layer_n = unet_upsample_layer_v3(d_layer_n,
                                            concat_layer=concatenate([d_layers[-1-n], t1_layers[-1-n]], axis=4),
                                            filter_size=6 * (ch_mult_per_layer ** (num_layers - n + 1)),
-                                           kernel_size=5,
+                                           kernel_size=3,
                                            rep_layers=num_rep_layers)
 
-    o_layer = LeakyReLU()(d_layer_n)
+    o_layer = ELU()(d_layer_n)
 
-    o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(o_layer)
+    o_layer = Conv3D(kernel_size=3, filters=6, padding='same', dtype=tf.float32)(o_layer)
 
     o_layer = tanh(o_layer) + i_layer
 

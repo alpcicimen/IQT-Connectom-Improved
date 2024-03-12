@@ -8,12 +8,13 @@ import time
 from math import ceil
 from random import randint, choices
 from typing import List, Tuple
+from collections.abc import Iterable
 
 from tqdm import tqdm
 
 import util
 
-from scipy.ndimage import zoom, binary_erosion, gaussian_filter
+from scipy.ndimage import zoom, binary_erosion
 
 
 class PairSequence(keras.utils.Sequence):
@@ -23,7 +24,7 @@ class PairSequence(keras.utils.Sequence):
                       t1_data_dir,
                       subject_labels,
                       pairs_dir,
-                      downsampling_rate=1.25/.7,
+                      downsampling_rate=1.25 / .7,
                       hr_downsampling_rate=1.,
                       hr_filedir=os.path.join('HR', 'dt_b1000_'),
                       t1_filedir=os.path.join('T1w', 'T1w_acpc_dc_restore_brain'),
@@ -45,7 +46,7 @@ class PairSequence(keras.utils.Sequence):
             pairs_dir: The directory where the calculated pairs (or triplets with T1) will be stored at
             downsampling_rate: The downsampling rate of the patch preprocessor.
                 The HR data is *downsampled* by this ratio.
-            HR_downsampling_rate: The downsampling rate of the target \"high resolution\" image.
+            hr_downsampling_rate: The downsampling rate of the target \"high resolution\" image.
             hr_filedir: The file directory for individual diffusion tensors.
             t1_filedir: The file directory for the T1w images.
             mode: The diffusion modality.
@@ -148,26 +149,26 @@ class PairSequence(keras.utils.Sequence):
             util.apply_clipped_normalization(subject_data_t1, mask, method=normalization_method, deviations=2)
 
             subject_data_lr = np.pad(subject_data_lr,  # Pad to ensure that there's no possible misshapen patch size
-                                     pad_width=np.array([[patch_size//2, patch_size//2],
-                                                         [patch_size//2, patch_size//2],
-                                                         [patch_size//2, patch_size//2],
+                                     pad_width=np.array([[patch_size // 2, patch_size // 2],
+                                                         [patch_size // 2, patch_size // 2],
+                                                         [patch_size // 2, patch_size // 2],
                                                          [0, 0]]), mode='edge')
 
             subject_data_hr = np.pad(subject_data_hr,
-                                     pad_width=np.array([[patch_size//2, patch_size//2],
-                                                         [patch_size//2, patch_size//2],
-                                                         [patch_size//2, patch_size//2],
+                                     pad_width=np.array([[patch_size // 2, patch_size // 2],
+                                                         [patch_size // 2, patch_size // 2],
+                                                         [patch_size // 2, patch_size // 2],
                                                          [0, 0]]), mode='edge')
 
             subject_data_t1 = np.pad(subject_data_t1,
-                                     pad_width=np.array([[patch_size//2, patch_size//2],
-                                                         [patch_size//2, patch_size//2],
-                                                         [patch_size//2, patch_size//2],
+                                     pad_width=np.array([[patch_size // 2, patch_size // 2],
+                                                         [patch_size // 2, patch_size // 2],
+                                                         [patch_size // 2, patch_size // 2],
                                                          [0, 0]]), mode='edge')
 
-            mask = np.pad(mask, pad_width=np.array([[patch_size//2, patch_size//2],
-                                                    [patch_size//2, patch_size//2],
-                                                    [patch_size//2, patch_size//2]]), mode='edge')
+            mask = np.pad(mask, pad_width=np.array([[patch_size // 2, patch_size // 2],
+                                                    [patch_size // 2, patch_size // 2],
+                                                    [patch_size // 2, patch_size // 2]]), mode='edge')
 
             sel_mask_indices = np.zeros(mask.shape, dtype=bool)
 
@@ -203,7 +204,8 @@ class PairSequence(keras.utils.Sequence):
                  pair_dir,
                  subject_labels,
                  pairs_per_subject=800,
-                 batch_size=12):
+                 batch_size=12,
+                 t1_postprocess=False):
 
         """
         Creates a custom keras Sequence for iteration. This iterator is suitable for use with :func:`keras.model.fit()`
@@ -212,12 +214,15 @@ class PairSequence(keras.utils.Sequence):
         :param subject_labels: Labels of subjects which will be used for training
         :param pairs_per_subject: Selects a subset of triplets per epoch for training
         :param batch_size: The size of the batches in the NN for training
+        :param t1_postprocess: Flag to determine whether to apply post-processing additions such as noise and
+            gamma correction. Use if data is normalised with min-max normalisation.
         """
 
         self.pair_dir = pair_dir
         self.subject_labels = subject_labels
         self.pairs_per_subject = pairs_per_subject
         self.batch_size = batch_size
+        self.t1_postprocess = t1_postprocess
 
         self.__total_patches = len(self.subject_labels) * self.pairs_per_subject
 
@@ -249,6 +254,26 @@ class PairSequence(keras.utils.Sequence):
 
         return run_indices
 
+    @staticmethod
+    def __augment_t1__(input_t1,
+                       gamma_std=0.02,
+                       contrast_std=0.02,
+                       brightness_std=0.02,
+                       max_noise_std=0.02):
+
+        gamma_t1 = np.exp(gamma_std * np.random.randn(1)[0])
+
+        contrast = np.min((1.4, np.max((0.6, 1.0 + contrast_std * np.random.randn(1)[0]))))
+        brightness = np.min((0.4, np.max((-0.4, brightness_std * np.random.randn(1)[0]))))
+
+        noise_std = max_noise_std * np.random.rand(1)[0]
+
+        modified_t1 = ((input_t1 - 0.5) * contrast + (0.5 + brightness)) + noise_std * np.random.randn(*input_t1.shape)
+
+        modified_t1 = np.clip(modified_t1, 0, 1)
+        modified_t1 = modified_t1 ** gamma_t1
+        return modified_t1
+
     def __getitem__(self, index):
         """
         Acquires the patch triplet at the selected index of the training batch.
@@ -269,10 +294,12 @@ class PairSequence(keras.utils.Sequence):
 
             target_patches.append(patch[..., :hr_lim])
             input_patches.append(patch[..., hr_lim:-1])
-            t1_patches.append(patch[..., -1:])
+
+            t1_patch = self.__augment_t1__(patch[..., -1:]) if self.t1_postprocess else patch[..., -1:]
+            t1_patches.append(t1_patch)
 
         return (tf.cast(tf.stack(target_patches), dtype=tf.float32),
-                (tf.cast(tf.stack(input_patches), dtype=tf.float32),tf.cast(tf.stack(t1_patches), dtype=tf.float32)))
+                (tf.cast(tf.stack(input_patches), dtype=tf.float32), tf.cast(tf.stack(t1_patches), dtype=tf.float32)))
 
     def sample_slice(self, subj, *_):
 
@@ -300,8 +327,8 @@ class PairSequence(keras.utils.Sequence):
 class DataLoader:
 
     def __init__(self,
-                 data_dir,
-                 subject_labels,
+                 data_dir: str | os.PathLike[str],
+                 subject_labels: Iterable[str],
                  subdir='.',
                  mode='dti',
                  file_head='dt_b1000_',
@@ -593,8 +620,6 @@ class TrainingSequence(keras.utils.Sequence):
         return tf.stack(target_patches), (tf.stack(input_patches), tf.stack(t1_patches))
 
     def __len__(self):
-        # return ceil(self.valid_patch_indices.shape[0] / self.batch_size)
-
         return self.__no_batches
 
     def on_epoch_end(self):
