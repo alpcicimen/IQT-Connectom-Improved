@@ -2,6 +2,7 @@ from typing import Tuple
 
 import keras
 import keras.layers as KL
+import os
 import tensorflow as tf
 from keras.activations import softplus, tanh
 
@@ -10,18 +11,24 @@ from layers import *
 
 def config_model(model_type,
                  patch_size=16,
-                 t1_patch_size=16):
+                 t1_patch_size=16,
+                 weights_dir: None | str | os.PathLike[str] = None):
 
     match model_type:
 
         case "UNet-T1":
-            return unet3d_t1_v2(patch_size, t1_patch_size)
+            model = unet3d_t1_v2(patch_size, t1_patch_size)
 
         case "UNet":
-            return unet3d_not1_v2(patch_size)
+            model = unet3d_not1_v2(patch_size)
 
         case _:
             raise ValueError(f"No model configuration for \"{model_type}\" found!")
+
+    if weights_dir is not None:
+        model.load_weights(weights_dir)
+
+    return model
 
 
 def simple_generator(input_ch, output_ch, ipatch_size=11, f_num=50, layer_num=1, ds=2):

@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 
@@ -14,25 +15,11 @@ from tqdm import tqdm
 
 from typing import List, Tuple
 
-from models import unet3d_t1_v2 as unet3d_t1, unet3d_not1_v2 as unet3d
+# from models import unet3d_t1_v2 as unet3d_t1, unet3d_not1_v2 as unet3d
+from models import config_model
 import util
 
 import tensorflow as tf
-
-
-patch_size = 16
-overlap = 4
-upsamp_rate = 1.6
-model: keras.Model = unet3d_t1(patch_size, patch_size)
-# model: keras.Model = unet3d(patch_size)
-
-data_dir = '/SAN/vision/hcp/DCA_HCP.2013.3_Proc'
-t1_data_dir = '/cluster/project0/IQT_Nigeria/HCP_t1t2_ALL/sim'
-data_subdir = 'T1w/Diffusion'
-t1_subdir = 'T1w'
-output_dir = '/cluster/project9/IQTSuperRes/alp_IQT_Output/metrics_out_3x_with_t1'
-model.load_weights(filepath="/cluster/project9/IQTSuperRes/alp_IQT_Output/gaussian_filtered_Run60")
-subjects = ["221319", "178950", "224022", "627549", "885975", "111009", "140420", "638049", "887373", "654754"]
 
 
 def dt_rmse(input, target):
@@ -56,7 +43,22 @@ def get_grid_indices(subj_img, i_patch_size=5, o_patch_size=3, overlap=0) -> Lis
     return recon_indx
 
 
-def main():
+def main(model_type,
+         model_weights_dir,
+         subjects,
+         data_dir,
+         data_subdir,
+         output_dir,
+         upsamp_rate,
+         t1_data_dir,
+         t1_subdir,
+         patch_size,
+         patch_overlap):
+
+    model = config_model(model_type,
+                         patch_size,
+                         patch_size,
+                         model_weights_dir)
 
     df = []
 
@@ -100,7 +102,7 @@ def main():
         target_tensors = np.copy(target_data[..., 2:])
         input_tensors = np.copy(test_data)[...]
 
-        run_indices = get_grid_indices(input_tensors, 8, 8, overlap=overlap)
+        run_indices = get_grid_indices(input_tensors, 8, 8, overlap=patch_overlap)
 
         model_output = np.zeros(test_data.shape[:-1] + (6,))
 
@@ -123,9 +125,9 @@ def main():
 
         for (i, j, k) in tqdm(run_indices, disable=False):
 
-            model_output[i - patch_size//2 + overlap:i + patch_size//2 - overlap,
-                         j - patch_size//2 + overlap:j + patch_size//2 - overlap,
-                         k - patch_size//2 + overlap:k + patch_size//2 - overlap, :] += \
+            model_output[i - patch_size//2 + patch_overlap:i + patch_size//2 - patch_overlap,
+                         j - patch_size//2 + patch_overlap:j + patch_size//2 - patch_overlap,
+                         k - patch_size//2 + patch_overlap:k + patch_size//2 - patch_overlap, :] += \
                 model([input_tensors[i - patch_size//2:i + patch_size//2,
                                      j - patch_size//2:j + patch_size//2,
                                      k - patch_size//2:k + patch_size//2][None, ...],
@@ -133,9 +135,9 @@ def main():
                                    j - patch_size//2:j + patch_size//2,
                                    k - patch_size//2:k + patch_size//2][None, ...]
                        ]).numpy()[0,
-                                  overlap:patch_size - overlap,
-                                  overlap:patch_size - overlap,
-                                  overlap:patch_size - overlap]
+                                  patch_overlap:patch_size - patch_overlap,
+                                  patch_overlap:patch_size - patch_overlap,
+                                  patch_overlap:patch_size - patch_overlap]
 
         input_data_copy = np.copy(input_tensors)
         target_data_copy = np.copy(target_tensors)
@@ -204,4 +206,41 @@ def main():
 
 if __name__ == '__main__':
 
-    main()
+    parser = argparse.ArgumentParser(prog='IQT-Testing',
+                                     description='The main testing script for IQT.')
+
+    # --------------------------------------------- Mandatory Arguments ------------------------------------------------
+
+    parser.add_argument('model_type')
+    parser.add_argument('model_weights_dir')
+    parser.add_argument('output_dir')
+
+########################################################################################################################
+
+    # ----------------------------------------------- I/O Arguments ----------------------------------------------------
+
+    parser.add_argument('--subjects', type=str, nargs='+',
+                        default=["221319", "178950", "224022", "627549", "885975",
+                                 "111009", "140420", "638049", "887373", "654754"]
+)
+
+    parser.add_argument('--data_dir', default='/SAN/vision/hcp/DCA_HCP.2013.3_Proc')
+    parser.add_argument('--data_subdir', default='T1w/Diffusion')
+
+    parser.add_argument('--t1_data_dir', default='/cluster/project0/IQT_Nigeria/HCP_t1t2_ALL/sim')
+    parser.add_argument('--t1_subdir', default='T1w')
+
+########################################################################################################################
+
+    # -------------------------------------------- Upsampling Arguments ------------------------------------------------
+
+    parser.add_argument('--patch_size', default=16)
+    parser.add_argument('--patch_overlap', default=4)
+
+    parser.add_argument('--upsamp_rate', type=float, default=1.25/0.7)
+
+########################################################################################################################
+
+    args = parser.parse_args()
+
+    main(**vars(args))

@@ -205,7 +205,11 @@ class PairSequence(keras.utils.Sequence):
                  subject_labels,
                  pairs_per_subject=800,
                  batch_size=12,
-                 t1_postprocess=False):
+                 t1_postprocess=True,
+                 gamma_std=0.1,
+                 contrast_std=0.1,
+                 brightness_std=0.1,
+                 max_noise_std=0.1):
 
         """
         Creates a custom keras Sequence for iteration. This iterator is suitable for use with :func:`keras.model.fit()`
@@ -223,6 +227,10 @@ class PairSequence(keras.utils.Sequence):
         self.pairs_per_subject = pairs_per_subject
         self.batch_size = batch_size
         self.t1_postprocess = t1_postprocess
+        self.gamma_std = gamma_std
+        self.contrast_std = contrast_std
+        self.brightness_std = brightness_std
+        self.max_noise_std = max_noise_std
 
         self.__total_patches = len(self.subject_labels) * self.pairs_per_subject
 
@@ -254,19 +262,14 @@ class PairSequence(keras.utils.Sequence):
 
         return run_indices
 
-    @staticmethod
-    def __augment_t1__(input_t1,
-                       gamma_std=0.02,
-                       contrast_std=0.02,
-                       brightness_std=0.02,
-                       max_noise_std=0.02):
+    def __augment_t1__(self, input_t1):
 
-        gamma_t1 = np.exp(gamma_std * np.random.randn(1)[0])
+        gamma_t1 = np.exp(self.gamma_std * np.random.randn(1)[0])
 
-        contrast = np.min((1.4, np.max((0.6, 1.0 + contrast_std * np.random.randn(1)[0]))))
-        brightness = np.min((0.4, np.max((-0.4, brightness_std * np.random.randn(1)[0]))))
+        contrast = np.min((1.4, np.max((0.6, 1.0 + self.contrast_std * np.random.randn(1)[0]))))
+        brightness = np.min((0.4, np.max((-0.4, self.brightness_std * np.random.randn(1)[0]))))
 
-        noise_std = max_noise_std * np.random.rand(1)[0]
+        noise_std = self.max_noise_std * np.random.rand(1)[0]
 
         modified_t1 = ((input_t1 - 0.5) * contrast + (0.5 + brightness)) + noise_std * np.random.randn(*input_t1.shape)
 

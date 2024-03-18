@@ -114,6 +114,9 @@ def save_md_fa_cfa(md: NDArray[Any],
     else:
         reference_header = header
 
+    if not os.path.exists(save_file_loc):
+        os.makedirs(save_file_loc)
+
     nib.save(nib.Nifti1Image(md, None, reference_header),
              os.path.join(save_file_loc, f"md"))
 
