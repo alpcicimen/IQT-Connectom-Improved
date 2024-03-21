@@ -25,6 +25,9 @@ def main(subjects,
     pooled_indiv_var = np.zeros(6)
     pooled_var = 0
 
+    total_mins = np.ones(6) * np.finfo(float).max
+    total_maxs = np.ones(6) * np.finfo(float).min
+
     for subject in tqdm(subjects, disable=cluster_mode):
 
         if cluster_mode:
@@ -45,6 +48,9 @@ def main(subjects,
         indiv_means = np.mean(dti_channels[mask], axis=0)
         indiv_vars = np.var(dti_channels[mask], axis=0)
 
+        indiv_mins = np.min(dti_channels[mask], axis=0)
+        indiv_maxs = np.max(dti_channels[mask], axis=0)
+
         sample_variance = np.var(dti_channels[mask])
 
         metrics_dict = {"Subject": subject,
@@ -55,6 +61,9 @@ def main(subjects,
         metrics_dict.update({f"ch_{n}_mean": indiv_means[n] for n in range(len(indiv_means))})
         metrics_dict.update({f"ch_{n}_std": np.sqrt(indiv_vars[n]) for n in range(len(indiv_means))})
 
+        metrics_dict.update({f"ch_{n}_min": indiv_mins[n] for n in range(len(indiv_mins))})
+        metrics_dict.update({f"ch_{n}_max": indiv_maxs[n] for n in range(len(indiv_maxs))})
+
         df.append(metrics_dict)
 
         n_sum += n
@@ -63,6 +72,9 @@ def main(subjects,
         pooled_indiv_mean += n * indiv_means
         pooled_indiv_var += n * indiv_vars
         pooled_var += n * sample_variance
+
+        total_mins = np.min((total_mins, indiv_mins), axis=0)
+        total_maxs = np.max((total_maxs, indiv_maxs), axis=0)
 
     pooled_mean /= n_sum
     pooled_indiv_mean /= n_sum
@@ -76,6 +88,9 @@ def main(subjects,
 
     metrics_dict.update({f"ch_{n}_mean": pooled_indiv_mean[n] for n in range(len(pooled_indiv_mean))})
     metrics_dict.update({f"ch_{n}_std": np.sqrt(pooled_indiv_var[n]) for n in range(len(pooled_indiv_var))})
+
+    metrics_dict.update({f"ch_{n}_min": total_mins[n] for n in range(len(total_mins))})
+    metrics_dict.update({f"ch_{n}_max": total_maxs[n] for n in range(len(total_maxs))})
 
     df.append(metrics_dict)
 
