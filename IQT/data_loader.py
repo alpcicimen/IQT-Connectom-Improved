@@ -30,6 +30,10 @@ class PairSequence(keras.utils.Sequence):
                       t1_filedir=os.path.join('T1w', 'T1w_acpc_dc_restore_brain'),
                       mode='dti',
                       normalization_method='stdscore',
+                      # clip_strategy='percentile',
+                      # clip_value=95,
+                      clip_strategy='constant',
+                      clip_value=3e-3,
                       patch_spacing=8,
                       patch_size=16,
                       mask_erosion=0,
@@ -53,6 +57,10 @@ class PairSequence(keras.utils.Sequence):
                 Options are \"dti\" for diffusion tensors, and \"map\" for mean apparent propagators.
             normalization_method: The method utilised to normalize the data.
                 See parameter ``normalization_method`` in :func:`util.apply_normalization` for more info
+            clip_strategy: The strategy utilised when clipping the tensors.
+                Valid strategies can be found in :func:`util.clip_on_predef_mode`
+            clip_value: The value(s) for the clipping strategy.
+                See :func:`util.clip_on_predef_mode` for more details.
             patch_spacing: The spacing between valid patches. Spacing == patch size guarantees no overlap.
             patch_size: The patch size for the model. Odd numbered patches have a central voxel.
             mask_erosion: The value for which the mask will be eroded for. Default value 0 means no erosion.
@@ -63,10 +71,13 @@ class PairSequence(keras.utils.Sequence):
             None
         """
 
+        norm_channels = None
+
         match mode:
 
             case 'dti':
                 loader_func = util.load_dtis
+                norm_channels = np.array([[0, 3, 5], [1, 2, 4]])
 
             case 'map':
                 loader_func = util.load_maps
@@ -102,15 +113,39 @@ class PairSequence(keras.utils.Sequence):
                 t1_filedir
             )
 
-            t1_downsample_rate = hr_header.get_zooms()[0] / t1_header.get_zooms()[0]
+            t1_downsample_rate = np.array(subject_data_t1.shape[:-1]) / np.array(subject_data_hr.shape[:-1])
+
+            mask = np.array(subject_data_hr[..., 0] >= 0, dtype=bool)
+
+            mask_t1 = np.array(zoom(subject_data_hr[..., 0],
+                                    zoom=(t1_downsample_rate[0],
+                                          t1_downsample_rate[1],
+                                          t1_downsample_rate[2]),
+                                    order=1, prefilter=False) >= 0, dtype=bool)
+
+            subject_data_hr = subject_data_hr[..., 2:]
+
+            # The masks may have problematic outlier voxels if they were not fine-tuned.
+            # Therefore, we just erode them further.
+            if mask_erosion:
+                mask = binary_erosion(mask, np.ones((mask_erosion, mask_erosion, mask_erosion)))
+                # mask_t1 = binary_erosion(mask_t1, np.ones((mask_erosion//2, mask_erosion//2, mask_erosion//2)))
+
+########################################################################################################################
+
+# -------------------------------------------------- Scaling Step ------------------------------------------------------
+
+########################################################################################################################
 
             if apply_blurring:
 
                 if hr_downsampling_rate > 1.:
                     subject_data_hr = util.apply_gaussian_filter(subject_data_hr, hr_downsampling_rate)
 
-                subject_data_lr = util.apply_gaussian_filter(subject_data_lr, downsampling_rate * hr_downsampling_rate)
-                subject_data_t1 = util.apply_gaussian_filter(subject_data_t1, t1_downsample_rate * hr_downsampling_rate)
+                subject_data_lr = util.apply_gaussian_filter(subject_data_lr,
+                                                             downsampling_rate * hr_downsampling_rate)
+                subject_data_t1 = util.apply_gaussian_filter(subject_data_t1,
+                                                             np.mean(t1_downsample_rate) * hr_downsampling_rate)
 
             if hr_downsampling_rate > 1.:
                 subject_data_hr = zoom(subject_data_hr,
@@ -127,26 +162,52 @@ class PairSequence(keras.utils.Sequence):
                                    order=1,
                                    prefilter=False)
 
+            target_scales = (np.array(subject_data_hr.shape[:-1] + (1,)) /
+                             np.array(subject_data_t1.shape))
+
+            subject_data_t1 = zoom(subject_data_t1, target_scales, order=1, prefilter=False)
+
             lr_dims = (np.array(subject_data_hr.shape[:-1] + (1,)) /
                        np.array(subject_data_lr.shape[:-1] + (1,)))
 
             subject_data_lr = zoom(subject_data_lr, lr_dims, order=1, prefilter=False)
 
-            target_scales = (np.array(subject_data_hr.shape[:-1] + (1,)) /
-                             np.array(subject_data_t1.shape))
+########################################################################################################################
 
-            mask = np.array(subject_data_hr[..., 0] >= 0, dtype=bool)
+# ---------------------------------------------- Normalization Step ----------------------------------------------------
 
-            if mask_erosion:
-                mask = binary_erosion(mask, np.ones((mask_erosion, mask_erosion, mask_erosion)))
+########################################################################################################################
 
-            subject_data_hr = subject_data_hr[..., 2:]
+            t1_values = util.get_clip_values(subject_data_t1, mask,
+                                             data_mode='t1w',
+                                             clip_strategy='percentile',
+                                             value=99)
 
-            subject_data_t1 = zoom(subject_data_t1, target_scales, order=1, prefilter=False)
+            values = util.get_clip_values(subject_data_hr, mask, mode, clip_strategy, clip_value)
 
-            util.apply_clipped_normalization(subject_data_lr, mask, method=normalization_method, deviations=2)
-            util.apply_clipped_normalization(subject_data_hr, mask, method=normalization_method, deviations=2)
-            util.apply_clipped_normalization(subject_data_t1, mask, method=normalization_method, deviations=2)
+            # Normalize at low-resolution space before applying linear interpolation to target resolution.
+            # This is so that we properly simulate our input.
+            util.apply_normalization_combined(subject_data_lr, mask,
+                                              method=normalization_method,
+                                              channels=norm_channels,
+                                              values=values)
+            util.apply_normalization_combined(subject_data_hr, mask,
+                                              method=normalization_method,
+                                              channels=norm_channels,
+                                              values=values)
+            util.apply_normalization_combined(subject_data_t1, mask,
+                                              method=normalization_method,
+                                              values=t1_values)
+
+########################################################################################################################
+
+# --------------------------------------------- Further Preprocessing --------------------------------------------------
+
+########################################################################################################################
+
+            subject_data_lr[~mask, :] = 0
+            subject_data_hr[~mask, :] = 0
+            subject_data_t1[~mask, :] = 0
 
             subject_data_lr = np.pad(subject_data_lr,  # Pad to ensure that there's no possible misshapen patch size
                                      pad_width=np.array([[patch_size // 2, patch_size // 2],

@@ -1,4 +1,4 @@
-from typing import Tuple, Any, Literal
+from typing import Tuple, Any, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -169,6 +169,59 @@ def apply_normalization(tensors, mask: NDArray[bool], method='minmax') -> NDArra
     return norm_metrics
 
 
+def apply_normalization_combined(tensors, mask: NDArray[bool],
+                                 method='minmax',
+                                 channels: NDArray | None = None,
+                                 values: NDArray | None = None) -> NDArray:
+    """
+    Applies either min-max or standard score normalisation on the data.
+    The normalisation is applied to the reference.
+
+    :param tensors: The tensor input to apply normalisation to.
+    The input variable is modified instead of returning a new variable.
+    :param mask: The tensor mask that determines which voxels will be normalised.
+    :param method: Which normalisation function to apply.
+    :param values:
+    The options are minmax for min-max, or stdscore for standard score.
+    :param channels:
+    :param values:
+    :return: The normalisation metrics which can be used to revert the normalisation.
+    """
+
+    norm_metrics = np.zeros((1, 2)) if channels is None else np.zeros((len(channels), 2))
+
+    sel_channels = np.array([[i for i in range(tensors.shape[-1])]]) if channels is None else channels
+
+    match method:
+
+        case "minmax":
+            for i, c in enumerate(sel_channels):
+
+                norm_metrics[i, :] = np.array([np.min(tensors[..., c][mask]),
+                                               np.max(tensors[..., c][mask])])
+                if values is not None:
+                    norm_metrics[i, :] = values[i, :]
+                    # norm_metrics[i, :] = [np.max((values[i, 0], norm_metrics[i, 0])),
+                    #                       np.min((values[i, 1], norm_metrics[i, 1]))]
+
+                tensors[..., c] = (tensors[..., c] - norm_metrics[i, 0]) / (norm_metrics[i, 1] - norm_metrics[i, 0])
+
+                # Clip to account for unmasked voxels
+                tensors[..., c] = np.clip(tensors[..., c], 0, 1)
+
+
+        case "stdscore":
+            for i, c in sel_channels:
+                norm_metrics[i, :] = np.array([np.mean(tensors[..., c][mask]),
+                                               np.std(tensors[..., c][mask])])
+                tensors[..., c] = (tensors[..., c] - norm_metrics[i, 0]) / (norm_metrics[i, 1])
+
+        case _:
+            raise ValueError("Only \"minmax\" and \"stdscore\" values are allowed.")
+
+    return norm_metrics
+
+
 def revert_normalization(tensors, mask, norm_metrics, method='minmax') -> None:
 
     for t in range(tensors.shape[-1]):
@@ -190,7 +243,81 @@ def revert_normalization(tensors, mask, norm_metrics, method='minmax') -> None:
     tensors[~mask, :] = 0
 
 
-def apply_clipped_normalization(tensors, mask, method=None, deviations: int = 2) -> NDArray | None:
+def revert_normalization_combined(tensors, mask, norm_metrics,
+                                  method='minmax',
+                                  channels: NDArray | None = None) -> None:
+
+    sel_channels = np.array([[i for i in range(tensors.shape[-1])]]) if channels is None else channels
+
+    match method:
+
+        case "minmax":
+
+            tensors[...] = np.clip(tensors, 0, 1)[...]  # Clip just in case (mainly because of NN output)
+
+            for i, c in enumerate(sel_channels):
+                tensors[..., c] = (tensors[..., c] * (norm_metrics[i, 1] - norm_metrics[i, 0])) + norm_metrics[i, 0]
+
+        case "stdscore":
+            for i, c in enumerate(sel_channels):
+                tensors[..., c] = tensors[..., c] * norm_metrics[i, 1] + norm_metrics[i, 0]
+
+        case _:
+            raise ValueError("Only \"minmax\" and \"stdscore\" values are allowed.")
+
+    tensors[~mask, :] = 0
+
+    return
+
+
+def get_clip_values(tensors, mask, data_mode, clip_strategy, value: float = 3e-3) -> NDArray[float]:
+
+    match data_mode:
+
+        case 'dti':
+
+            norm_channels = np.array([[0, 3, 5], [1, 2, 4]])
+
+            match clip_strategy:
+
+                case 'std':
+
+                    mean = np.mean(tensors[mask, ...][:, norm_channels[0]])
+                    std_n = np.std(tensors[mask, ...][:, norm_channels[0]]) * value
+
+                    return np.array([[0, mean + std_n], [-(mean + std_n), mean + std_n]])
+
+                case 'constant':
+                    return np.array([[0, value], [-value, value]])
+
+                case 'percentile':
+
+                    high_range = np.percentile(tensors[mask, ...][:, norm_channels[0]], value)
+
+                    return np.array([[0, high_range], [-high_range, high_range]])
+
+        case 't1w':
+
+            match clip_strategy:
+
+                case 'percentile':
+
+                    low_range = np.percentile(tensors[mask], (100 - value) / 2)
+                    high_range = np.percentile(tensors[mask], 50 + value / 2)
+
+                    # clip_on_value(tensors, mask, values=[low_range, high_range])
+
+                    return np.array([[low_range, high_range]])
+
+        case _:
+            return np.array([np.min(tensors), np.max(tensors)])
+
+
+@DeprecationWarning
+def apply_clipped_normalization(tensors,
+                                mask,
+                                method=None,
+                                deviations: int | Sequence[int] = (None, 2)) -> NDArray | None:
     """
     Applies standard score normalization, and clips the values to the specific std range.
     Depending on the modality the returned value either has the normalization or returned with the original range.
@@ -201,23 +328,38 @@ def apply_clipped_normalization(tensors, mask, method=None, deviations: int = 2)
         \"minmax\" returns the values as min-max normalized, and everything else returns the original range.
 
     :param deviations: Number of standard deviations the values will be clipped to.
-        Negative values are treated as absolute.
+        Negative values are treated as absolute if int, otherwise h_clip > l_clip.
 
     :return: Normalization metrics if method is valid, otherwise None
     """
 
+    if isinstance(deviations, int):
+        l_clip = -abs(deviations)
+        h_clip = abs(deviations)
+    else:
+        l_clip = deviations[0]
+        h_clip = deviations[1]
+
+        # Python evaluates booleans in order, so if any values are none (meaning no limit)
+        # the program does not throw this error.
+        if l_clip is not None and h_clip is not None and h_clip < l_clip:
+            raise ValueError("Second clip value cannot be less than the first!")
+
     metrics = apply_normalization(tensors, mask, 'stdscore')
-    tensors[...] = np.clip(tensors, -abs(deviations), abs(deviations), dtype=float)
+    tensors[...] = np.clip(tensors, l_clip, h_clip, dtype=float)
 
     match method:
 
+        # No need to apply stdscore again, just return metrics as is
         case 'stdscore':
             return metrics
 
+        # Revert to normal range (with clipped values) and return min-max normalisation metrics
         case 'minmax':
             revert_normalization(tensors, mask, metrics, 'stdscore')
             return apply_normalization(tensors, mask, 'minmax')
 
+        # Revert normalisation, and return void
         case _:
             revert_normalization(tensors, mask, metrics, 'stdscore')
             return None
@@ -278,7 +420,8 @@ def md_fa_cfa(tensors, mask,
 
                     md[i, j, k] = np.mean(eig_vals)
 
-                    fa[i, j, k] = np.sqrt(1.5 * np.sum((eig_vals - eig_vals.mean()) ** 2) / np.sum(eig_vals ** 2))
+                    fa[i, j, k] = 0 if np.sum(eig_vals ** 2) == 0 \
+                        else np.sqrt(1.5 * np.sum((eig_vals - eig_vals.mean()) ** 2) / np.sum(eig_vals ** 2))
                     peigv[i, j, k] = eig_vecs[:, eig_vals.argmax()]
                     cfa[i, j, k, :] = fa[i, j, k] * np.abs(eig_vecs[:, eig_vals.argmax()])
 

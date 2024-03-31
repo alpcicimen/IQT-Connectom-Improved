@@ -3,6 +3,7 @@ import os.path
 from math import floor
 
 import keras.optimizers.schedules
+from tensorflow import keras
 from tensorflow.keras.optimizers.schedules import ExponentialDecay, PiecewiseConstantDecay, LearningRateSchedule
 
 from data_loader import *
@@ -134,7 +135,7 @@ def main(model_type,
     train_seq = PairSequence(pair_dir=scratch_dir,
                              subject_labels=subjects,
                              batch_size=batch_size,
-                             pairs_per_subject=200,
+                             pairs_per_subject=600,
                              t1_postprocess=True)
 
     _lr = create_optim(lr, lr_decay, epochs, len(train_seq))
@@ -266,6 +267,8 @@ if __name__ == '__main__':
     parser.add_argument('--mask_erosion', type=int, default=5)
 
 ########################################################################################################################
+
+    keras.utils.set_random_seed(42)
 
     args = parser.parse_args()
 

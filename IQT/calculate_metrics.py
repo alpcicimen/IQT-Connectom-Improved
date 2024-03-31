@@ -70,16 +70,16 @@ def main(subjects,
 
         pooled_mean += n * sample_mean
         pooled_indiv_mean += n * indiv_means
-        pooled_indiv_var += n * indiv_vars
-        pooled_var += n * sample_variance
+        pooled_indiv_var += n * (indiv_vars + indiv_means**2)
+        pooled_var += n * (sample_variance + sample_mean**2)
 
         total_mins = np.min((total_mins, indiv_mins), axis=0)
         total_maxs = np.max((total_maxs, indiv_maxs), axis=0)
 
     pooled_mean /= n_sum
     pooled_indiv_mean /= n_sum
-    pooled_var /= n_sum
-    pooled_indiv_var /= n_sum
+    pooled_var = pooled_var / n_sum - pooled_mean ** 2
+    pooled_indiv_var = pooled_indiv_var / n_sum - pooled_indiv_mean ** 2
 
     metrics_dict = {"Subject": "Pooled Total",
                     "num_valid_voxels": n_sum,

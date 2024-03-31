@@ -1,25 +1,17 @@
 import argparse
 import os
-import sys
-
-import numpy as np
-import keras
-
-import pandas as pd
-
-from scipy.ndimage import binary_erosion, gaussian_filter, zoom
-from skimage.metrics import structural_similarity as ssim
-import nibabel as nib
-
-from tqdm import tqdm
-
 from typing import List, Tuple
 
-# from models import unet3d_t1_v2 as unet3d_t1, unet3d_not1_v2 as unet3d
+import nibabel as nib
+import numpy as np
+import pandas as pd
+
+from scipy.ndimage import binary_erosion, zoom
+from skimage.metrics import structural_similarity as ssim
+from tqdm import tqdm
+
 from models import config_model
 import util
-
-import tensorflow as tf
 
 
 def dt_rmse(input, target):
@@ -53,7 +45,8 @@ def main(model_type,
          t1_data_dir,
          t1_subdir,
          patch_size,
-         patch_overlap):
+         patch_overlap,
+         max_noise_std):
 
     model = config_model(model_type,
                          patch_size,
@@ -71,40 +64,40 @@ def main(model_type,
 
         test_data, _ = util.load_dtis(os.path.join(data_dir, subj_id, data_subdir), "dt_b1000_")
 
-        mask = test_data[..., 0] > -1
+        target_data, _ = util.load_dtis(os.path.join(data_dir, subj_id, data_subdir), "dt_b1000_")
 
-        mask = binary_erosion(mask, np.ones((5, 5, 5)))
-
-        test_data_rescaled = test_data[..., 2:]
-
-        test_data_rescaled = util.apply_gaussian_filter(test_data_rescaled, upsamp_rate)
-
-        test_data_rescaled = zoom(test_data_rescaled,
-                                  (1/upsamp_rate, 1/upsamp_rate, 1/upsamp_rate, 1),
-                                  order=1,
-                                  prefilter=False)
-
-        dti_rescale_factor = np.array(test_data.shape[:-1] + (1,)) / np.array(test_data_rescaled.shape[:-1] + (1,))
-
-        test_data = zoom(test_data_rescaled, dti_rescale_factor, order=1, prefilter=False)
-
-        target_data, _ = util.load_dtis(os.path.join(data_dir, subj_id, data_subdir),
-                                        "dt_b1000_")
         test_data_t1, _ = util.load_structural(os.path.join(t1_data_dir, subj_id, t1_subdir),
                                                "T1w_acpc_dc_restore_brain")
 
+        mask = np.array(test_data[..., 0] >= 0, dtype=bool)
+        mask_lr = np.array(zoom(test_data[..., 0],
+                                zoom=(1/upsamp_rate, 1/upsamp_rate, 1/upsamp_rate),
+                                order=1, prefilter=False) >= 0, dtype=bool)
+
         t1_rescale_factor = np.array(target_data.shape[:-1] + (1,)) / np.array(test_data_t1.shape)
 
+        mask_t1 = np.array(zoom(test_data[..., 0],
+                                zoom=(1/t1_rescale_factor)[:-1],
+                                order=1, prefilter=False) >= 0, dtype=bool)
+
+        test_data = test_data[..., 2:]
+        target_data = target_data[..., 2:]
+
+        # The masks may have problematic outlier voxels if they were not fine-tuned.
+        # Therefore, we just erode them further.
+        mask = binary_erosion(mask, np.ones((5, 5, 5)), iterations=1)
+        mask_t1 = binary_erosion(mask_t1, np.ones((5, 5, 5)), iterations=1)
+
+########################################################################################################################
+
+# ----------------------------------------------- Rescaling Step -------------------------------------------------------
+
+########################################################################################################################
+
+        # Handle T1w first as it is more straightforward. Apply gaussian, lower resolution to HR DTI level
         test_data_t1 = util.apply_gaussian_filter(test_data_t1, 1.25/0.7)
 
         t1_rescaled = zoom(test_data_t1, t1_rescale_factor, order=1)
-
-        target_tensors = np.copy(target_data[..., 2:])
-        input_tensors = np.copy(test_data)[...]
-
-        run_indices = get_grid_indices(input_tensors, 8, 8, overlap=patch_overlap)
-
-        model_output = np.zeros(test_data.shape[:-1] + (6,))
 
         t1_rescaled_nii = nib.Nifti1Image(t1_rescaled, None,
                                           nib.load(
@@ -119,33 +112,93 @@ def main(model_type,
 
         nib.save(t1_rescaled_nii, os.path.join(output_dir, f"{subj_id}_T1_resc"))
 
-        norm_metrics_input = util.apply_clipped_normalization(input_tensors, mask, 'minmax')
-        norm_metrics_target = util.apply_clipped_normalization(target_tensors, mask, 'minmax')
-        norm_metrics_t1 = util.apply_clipped_normalization(t1_rescaled, mask, 'minmax')
+        test_data_rescaled = util.apply_gaussian_filter(test_data, upsamp_rate)
+
+        test_data_rescaled = zoom(test_data_rescaled,
+                                  (1/upsamp_rate, 1/upsamp_rate, 1/upsamp_rate, 1),
+                                  order=1,
+                                  prefilter=False)
+
+        dti_rescale_factor = np.array(test_data.shape[:-1] + (1,)) / np.array(test_data_rescaled.shape[:-1] + (1,))
+
+        test_data = zoom(test_data_rescaled, dti_rescale_factor, order=1, prefilter=False)
+
+########################################################################################################################
+
+# ---------------------------------------------- Normalisation Step ----------------------------------------------------
+
+########################################################################################################################
+
+        # Clip T1w here
+        norm_metrics_t1 = util.get_clip_values(t1_rescaled, mask,
+                                               data_mode='t1w',
+                                               clip_strategy='percentile',
+                                               value=99)
+
+        norm_metrics_target = util.get_clip_values(target_data, mask,
+                                                   'dti',
+                                                   # 'constant', 3e-3)
+                                                   'percentile', 95)
+
+        norm_metrics_input = util.apply_normalization_combined(test_data, mask,
+                                                               method='minmax',
+                                                               channels=np.array([[0, 3, 5], [1, 2, 4]]),
+                                                               values=norm_metrics_target)
+        norm_metrics_target = util.apply_normalization_combined(target_data, mask,
+                                                                method='minmax',
+                                                                channels=np.array([[0, 3, 5], [1, 2, 4]]),
+                                                                values=norm_metrics_target)
+        norm_metrics_t1 = util.apply_normalization_combined(t1_rescaled, mask,
+                                                            method='minmax', values=norm_metrics_t1)
+
+########################################################################################################################
+
+# ----------------------------------------------- Estimation Step ------------------------------------------------------
+
+########################################################################################################################
+
+        if max_noise_std:
+            noise_std = 0.1 * np.random.rand(1)[0]
+            t1_rescaled += noise_std * np.random.randn(*t1_rescaled.shape)
+
+        test_data[~mask, :] = 0
+        t1_rescaled[~mask, :] = 0
+        target_data[~mask, :] = 0
+
+        input_tensors = np.copy(test_data)[...]
+
+        run_indices = get_grid_indices(input_tensors, 8, 8, overlap=patch_overlap)
+
+        model_output = np.zeros(test_data.shape[:-1] + (6,))
 
         for (i, j, k) in tqdm(run_indices, disable=False):
+
+            i_patch = input_tensors[i - patch_size//2:i + patch_size//2,
+                                    j - patch_size//2:j + patch_size//2,
+                                    k - patch_size//2:k + patch_size//2][None, ...]
+
+            t1_patch = t1_rescaled[i - patch_size//2:i + patch_size//2,
+                                   j - patch_size//2:j + patch_size//2,
+                                   k - patch_size//2:k + patch_size//2][None, ...]
 
             model_output[i - patch_size//2 + patch_overlap:i + patch_size//2 - patch_overlap,
                          j - patch_size//2 + patch_overlap:j + patch_size//2 - patch_overlap,
                          k - patch_size//2 + patch_overlap:k + patch_size//2 - patch_overlap, :] += \
-                model([input_tensors[i - patch_size//2:i + patch_size//2,
-                                     j - patch_size//2:j + patch_size//2,
-                                     k - patch_size//2:k + patch_size//2][None, ...],
-                       t1_rescaled[i - patch_size//2:i + patch_size//2,
-                                   j - patch_size//2:j + patch_size//2,
-                                   k - patch_size//2:k + patch_size//2][None, ...]
-                       ]).numpy()[0,
-                                  patch_overlap:patch_size - patch_overlap,
-                                  patch_overlap:patch_size - patch_overlap,
-                                  patch_overlap:patch_size - patch_overlap]
+                model([i_patch, t1_patch]).numpy()[0,
+                                                   patch_overlap:patch_size - patch_overlap,
+                                                   patch_overlap:patch_size - patch_overlap,
+                                                   patch_overlap:patch_size - patch_overlap]
 
         input_data_copy = np.copy(input_tensors)
-        target_data_copy = np.copy(target_tensors)
+        target_data_copy = np.copy(target_data)
         model_output_rescaled = np.copy(model_output)
 
-        util.revert_normalization(target_data_copy, mask, norm_metrics_target, method='minmax')
-        util.revert_normalization(model_output_rescaled, mask, norm_metrics_target, method='minmax')
-        util.revert_normalization(input_data_copy, mask, norm_metrics_input, method='minmax')
+        util.revert_normalization_combined(target_data_copy, mask, norm_metrics_target,
+                                           method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
+        util.revert_normalization_combined(model_output_rescaled, mask, norm_metrics_input,
+                                           method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
+        util.revert_normalization_combined(input_data_copy, mask, norm_metrics_input,
+                                           method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
 
         md_orig, fa_orig, cfa_orig, eigv_orig = util.md_fa_cfa(target_data_copy, mask, cluster_mode=True)
         md_in, fa_in, cfa_in, eigv_in = util.md_fa_cfa(input_data_copy, mask, cluster_mode=True)
@@ -208,8 +261,11 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(prog='IQT-Testing',
                                      description='The main testing script for IQT.')
+########################################################################################################################
 
-    # --------------------------------------------- Mandatory Arguments ------------------------------------------------
+# --------------------------------------------- Mandatory Arguments ----------------------------------------------------
+
+########################################################################################################################
 
     parser.add_argument('model_type')
     parser.add_argument('model_weights_dir')
@@ -217,12 +273,13 @@ if __name__ == '__main__':
 
 ########################################################################################################################
 
-    # ----------------------------------------------- I/O Arguments ----------------------------------------------------
+# ------------------------------------------------ I/O Arguments -------------------------------------------------------
+
+########################################################################################################################
 
     parser.add_argument('--subjects', type=str, nargs='+',
                         default=["221319", "178950", "224022", "627549", "885975",
-                                 "111009", "140420", "638049", "887373", "654754"]
-)
+                                 "111009", "140420", "638049", "887373", "654754"])
 
     parser.add_argument('--data_dir', default='/SAN/vision/hcp/DCA_HCP.2013.3_Proc')
     parser.add_argument('--data_subdir', default='T1w/Diffusion')
@@ -232,7 +289,9 @@ if __name__ == '__main__':
 
 ########################################################################################################################
 
-    # -------------------------------------------- Upsampling Arguments ------------------------------------------------
+# --------------------------------------------- Upsampling Arguments ---------------------------------------------------
+
+########################################################################################################################
 
     parser.add_argument('--patch_size', default=16)
     parser.add_argument('--patch_overlap', default=4)
@@ -240,6 +299,8 @@ if __name__ == '__main__':
     parser.add_argument('--upsamp_rate', type=float, default=1.25/0.7)
 
 ########################################################################################################################
+
+    parser.add_argument('--max_noise_std', type=float, default=0.1)
 
     args = parser.parse_args()
 

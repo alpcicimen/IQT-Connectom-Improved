@@ -3,8 +3,7 @@ from typing import Tuple
 import keras
 import keras.layers as KL
 import os
-import tensorflow as tf
-from keras.activations import softplus, tanh
+from keras.activations import tanh
 
 from layers import *
 
