@@ -209,7 +209,6 @@ def apply_normalization_combined(tensors, mask: NDArray[bool],
                 # Clip to account for unmasked voxels
                 tensors[..., c] = np.clip(tensors[..., c], 0, 1)
 
-
         case "stdscore":
             for i, c in sel_channels:
                 norm_metrics[i, :] = np.array([np.mean(tensors[..., c][mask]),

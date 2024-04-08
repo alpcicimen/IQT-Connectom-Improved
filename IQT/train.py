@@ -1,6 +1,5 @@
 import argparse
 import os.path
-from math import floor
 
 import keras.optimizers.schedules
 from tensorflow import keras
@@ -57,7 +56,7 @@ def l2_loss_fn(output: tf.Tensor, target: tf.Tensor):
 @tf.function
 def train_step(target_batch, input_batch, t1_batch):
     with tf.GradientTape() as tape:
-        model_output = model([input_batch, t1_batch])
+        model_output = model([input_batch, t1_batch], training=True)
 
         loss = loss_fn(target_batch, model_output)
 
@@ -81,7 +80,8 @@ def main(model_type,
          output_dir,
          dt_data_dir,
          t1_data_dir,
-         subjects,
+         training_subjects,
+         validation_subjects,
          scratch_dir,
          downsampling_rate,
          hr_subdir,
@@ -113,12 +113,12 @@ def main(model_type,
         os.mkdir(output_dir)
 
     if make_dataset:
-        print(f"Generating patch triplet library on: {scratch_dir}")
+        print(f"Generating patch triplet library on: {scratch_dir}.\nGenerating training subjects...")
 
         PairSequence.generate_data(diff_data_dir=dt_data_dir,
                                    t1_data_dir=t1_data_dir,
-                                   subject_labels=subjects,
-                                   pairs_dir=scratch_dir,
+                                   subject_labels=training_subjects,
+                                   pairs_dir=os.path.join(scratch_dir, "training"),
                                    downsampling_rate=downsampling_rate[0],
                                    hr_downsampling_rate=1. if len(downsampling_rate) <= 1 else downsampling_rate[1],
                                    hr_filedir=os.path.join(hr_subdir, hr_file_head),
@@ -130,13 +130,37 @@ def main(model_type,
                                    mask_erosion=mask_erosion,
                                    cluster_mode=cluster_mode)
 
+        print("Generating validation subjects...")
+
+        PairSequence.generate_data(diff_data_dir=dt_data_dir,
+                                   t1_data_dir=t1_data_dir,
+                                   subject_labels=validation_subjects,
+                                   pairs_dir=os.path.join(scratch_dir, "validation"),
+                                   downsampling_rate=downsampling_rate[0],
+                                   hr_downsampling_rate=1. if len(downsampling_rate) <= 1 else downsampling_rate[1],
+                                   hr_filedir=os.path.join(hr_subdir, hr_file_head),
+                                   t1_filedir=os.path.join(t1_subdir, t1_file_head),
+                                   mode='dti',
+                                   normalization_method='minmax',
+                                   patch_spacing=patch_size[0],
+                                   patch_size=patch_size[0],
+                                   random_shift=False,
+                                   mask_erosion=mask_erosion,
+                                   cluster_mode=cluster_mode)
+
         print("Generated patch triplets.")
 
-    train_seq = PairSequence(pair_dir=scratch_dir,
-                             subject_labels=subjects,
+    train_seq = PairSequence(pair_dir=os.path.join(scratch_dir, "training"),
+                             subject_labels=training_subjects,
                              batch_size=batch_size,
-                             pairs_per_subject=600,
+                             pairs_per_subject=200,
                              t1_postprocess=True)
+
+    validation_seq = PairSequence(pair_dir=os.path.join(scratch_dir, "validation"),
+                                  subject_labels=validation_subjects,
+                                  batch_size=batch_size,
+                                  pairs_per_subject=None,
+                                  t1_postprocess=True)
 
     _lr = create_optim(lr, lr_decay, epochs, len(train_seq))
 
@@ -157,41 +181,33 @@ def main(model_type,
             tf.summary.scalar('Loss rate at start',
                               _lr if isinstance(_lr, float) else _lr(len(train_seq) * run + 1), step=run)
 
-        train_size = floor(0.9 * train_seq.__len__())
-
-        val_size = train_seq.__len__() - train_size
-
         if cluster_mode:
             time_start = time.time()
 
-        for batch, (target_batch, (input_batch, t1_batch)) \
-                in enumerate(tqdm(train_seq, disable=cluster_mode)):
+        for (target_batch, (input_batch, t1_batch)) in tqdm(train_seq, disable=cluster_mode):
 
-            if batch <= train_size:
+            closs = train_step(target_batch, input_batch, t1_batch)
+            train_loss += closs
 
-                closs = train_step(target_batch, input_batch, t1_batch)
-                train_loss += closs
+        for (target_batch, (input_batch, t1_batch)) in tqdm(validation_seq, disable=cluster_mode):
 
-            else:
-
-                closs = val_step(target_batch, input_batch, t1_batch)
-                val_loss += closs
+            val_loss += val_step(target_batch, input_batch, t1_batch)
 
         if cluster_mode:
             print("Time taken for run {}: {} seconds.".format((run + 1), time.time() - time_start))
 
-        print(f"Run {run + 1} mean training loss: {train_loss / train_size}")
-        print(f"Run {run + 1} mean validation loss: {val_loss / val_size}")
+        print(f"Run {run + 1} mean training loss: {train_loss / len(train_seq)}")
+        print(f"Run {run + 1} mean validation loss: {val_loss / len(validation_seq)}")
 
         with (summary_writer.as_default()):
-            tf.summary.scalar('Training Epoch Mean Loss', train_loss / train_size, step=run)
-            tf.summary.scalar('Validation Epoch Mean Loss', val_loss / val_size, step=run)
+            tf.summary.scalar('Training Epoch Mean Loss', train_loss / len(train_seq), step=run)
+            tf.summary.scalar('Validation Epoch Mean Loss', val_loss / len(validation_seq), step=run)
 
             tf.summary.image('Model Output Slice',
                              model([sample_i, sample_t1])[:, :, 7, :, 0:1],
                              step=run)
 
-        train_seq.on_epoch_end()
+        train_seq.on_epoch_end()  # There's no need to shuffle for validation so shuffle only training
 
         model.save_weights(os.path.join(output_dir, f"Run{run + 1}"))
 
@@ -251,12 +267,32 @@ if __name__ == '__main__':
     parser.add_argument('--lr_decay', default=None,
                         help='The learning decay type. Possible values: [(None), constant, exponential]')
 
-    parser.add_argument('--subjects', nargs='+',
-                        default=["100307", "131924", "162733", "210617", "541943", "792564", "100408",
-                                 "133625", "163129", "211417", "545345", "826353", "101915", "133827",
-                                 "163432", "211720", "547046", "856766", "102816", "133928", "165840",
-                                 "212318", "559053", "857263", "103414", "214019", "561242", "103515",
-                                 "134324", "167743", "214221", "570243", "859671", "103818", "135932"])
+    parser.add_argument('--training_subjects', nargs='+',
+                        default=["100408", "101915", "102816", "103414", "103515", "103818", "105115", "105216",
+                                 "106016", "106319", "110411", "111312", "111716", "112819", "113619", "115320",
+                                 "117122", "118730", "118932", "119833", "120111", "123117", "126325", "127933",
+                                 "128632", "129028", "130316", "131924", "133625", "133827", "134324", "135932",
+                                 "136833", "138231", "138534", "139637", "140824", "143325", "148335", "149337",
+                                 "149539", "150423", "151223", "151526", "151627", "153025", "153429", "154431",
+                                 "156637", "157336", "158035", "158540", "159239", "162329", "162733", "163129",
+                                 "163432", "165840", "167743", "169343", "172332", "175439", "176542", "177746",
+                                 "182739", "185139", "188347", "189450", "191437", "192439", "192540", "193239",
+                                 "195647", "196144", "196750", "199655", "201111", "205119", "205725", "205826",
+                                 "208226", "209733", "209935", "211417", "211720", "212318", "214019", "214221",
+                                 "214423", "217126", "217429", "239944", "245333", "246133", "249947", "250427",
+                                 "255639", "280739", "284646", "298051", "304020", "307127", "329440", "351938",
+                                 "355239", "366446", "390645", "397760", "429040", "448347", "485757", "497865",
+                                 "541943", "545345", "559053", "581349", "586460", "598568", "645551", "665254",
+                                 "672756", "677968", "680957", "688569", "702133", "704238", "713239", "727654",
+                                 "729557", "732243", "749361", "751348", "756055", "761957", "765056", "788876",
+                                 "792564", "826353", "865363", "871964", "872158", "877168", "889579", "894673",
+                                 "896879", "904044", "917255", "932554", "937160", "951457", "959574", "978578",
+                                 "984472", "992774"])
+
+    parser.add_argument('--validation_subjects', nargs='+',
+                        default=["113215", "144226", "182840", "371843", "734045", "156233", "561242", "857263",
+                                 "150524", "734045", "547046", "198451", "190031", "530635", "857263", "120212",
+                                 "856766", "144226", "197550", "124422", "142828", "197550"])
 
     parser.add_argument('--patch_size', type=int, nargs='+', default=[16])
     #  Unfortunately bash does not natively support floating point operations, so a possible workaround would be to
@@ -284,3 +320,10 @@ if __name__ == '__main__':
     # "188347", "249947", "894673", "112819", "144226", "189450", "250427",
     # "665254", "896879", "113215", "148032", "190031", "255639", "672756",
     # "899885", "113619", "148335", "191437", "280739", "677968"])
+
+# Old Training Subjects
+# ["100307", "131924", "162733", "210617", "541943", "792564", "100408",
+#  "133625", "163129", "211417", "545345", "826353", "101915", "133827",
+#  "163432", "211720", "547046", "856766", "102816", "133928", "165840",
+#  "212318", "559053", "857263", "103414", "214019", "561242", "103515",
+#  "134324", "167743", "214221", "570243", "859671", "103818", "135932"]
