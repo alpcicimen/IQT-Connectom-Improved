@@ -312,7 +312,6 @@ def get_clip_values(tensors, mask, data_mode, clip_strategy, value: float = 3e-3
             return np.array([np.min(tensors), np.max(tensors)])
 
 
-@DeprecationWarning
 def apply_clipped_normalization(tensors,
                                 mask,
                                 method=None,

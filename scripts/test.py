@@ -42,6 +42,8 @@ def main(model_type,
          data_subdir,
          output_dir,
          upsamp_rate,
+         clip_strategy,
+         clip_value,
          t1_data_dir,
          t1_subdir,
          patch_size,
@@ -76,17 +78,12 @@ def main(model_type,
 
         t1_rescale_factor = np.array(target_data.shape[:-1] + (1,)) / np.array(test_data_t1.shape)
 
-        mask_t1 = np.array(zoom(test_data[..., 0],
-                                zoom=(1/t1_rescale_factor)[:-1],
-                                order=1, prefilter=False) >= 0, dtype=bool)
-
         test_data = test_data[..., 2:]
         target_data = target_data[..., 2:]
 
         # The masks may have problematic outlier voxels if they were not fine-tuned.
         # Therefore, we just erode them further.
         mask = binary_erosion(mask, np.ones((5, 5, 5)), iterations=1)
-        mask_t1 = binary_erosion(mask_t1, np.ones((5, 5, 5)), iterations=1)
 
 ########################################################################################################################
 
@@ -137,19 +134,14 @@ def main(model_type,
 
         norm_metrics_target = util.get_clip_values(target_data, mask,
                                                    'dti',
-                                                   # 'constant', 3e-3)
-                                                   'percentile', 95)
+                                                   clip_strategy=clip_strategy,
+                                                   value=clip_value)
 
         norm_metrics_input = util.apply_normalization_combined(test_data, mask,
                                                                method='minmax',
                                                                channels=np.array([[0, 3, 5], [1, 2, 4]]),
                                                                values=norm_metrics_target)
-        norm_metrics_target = util.apply_normalization_combined(target_data, mask,
-                                                                method='minmax',
-                                                                channels=np.array([[0, 3, 5], [1, 2, 4]]),
-                                                                values=norm_metrics_target)
-        norm_metrics_t1 = util.apply_normalization_combined(t1_rescaled, mask,
-                                                            method='minmax', values=norm_metrics_t1)
+        util.apply_normalization_combined(t1_rescaled, mask, method='minmax', values=norm_metrics_t1)
 
 ########################################################################################################################
 
@@ -157,9 +149,8 @@ def main(model_type,
 
 ########################################################################################################################
 
-        if max_noise_std:
-            noise_std = 0.1 * np.random.rand(1)[0]
-            t1_rescaled += noise_std * np.random.randn(*t1_rescaled.shape)
+        noise_std = max_noise_std * np.random.rand(1)[0]
+        t1_rescaled += noise_std * np.random.randn(*t1_rescaled.shape)
 
         test_data[~mask, :] = 0
         t1_rescaled[~mask, :] = 0
@@ -189,23 +180,17 @@ def main(model_type,
                                                    patch_overlap:patch_size - patch_overlap,
                                                    patch_overlap:patch_size - patch_overlap]
 
-        input_data_copy = np.copy(input_tensors)
-        target_data_copy = np.copy(target_data)
-        model_output_rescaled = np.copy(model_output)
-
-        util.revert_normalization_combined(target_data_copy, mask, norm_metrics_target,
+        util.revert_normalization_combined(model_output, mask, norm_metrics_input,
                                            method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
-        util.revert_normalization_combined(model_output_rescaled, mask, norm_metrics_input,
-                                           method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
-        util.revert_normalization_combined(input_data_copy, mask, norm_metrics_input,
+        util.revert_normalization_combined(input_tensors, mask, norm_metrics_input,
                                            method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
 
-        md_orig, fa_orig, cfa_orig, eigv_orig = util.md_fa_cfa(target_data_copy, mask, cluster_mode=True)
-        md_in, fa_in, cfa_in, eigv_in = util.md_fa_cfa(input_data_copy, mask, cluster_mode=True)
-        md_gen, fa_gen, cfa_gen, eigv_gen = util.md_fa_cfa(model_output_rescaled, mask, cluster_mode=True)
+        md_orig, fa_orig, cfa_orig, eigv_orig = util.md_fa_cfa(target_data, mask, cluster_mode=True)
+        md_in, fa_in, cfa_in, eigv_in = util.md_fa_cfa(input_tensors, mask, cluster_mode=True)
+        md_gen, fa_gen, cfa_gen, eigv_gen = util.md_fa_cfa(model_output, mask, cluster_mode=True)
 
-        linear_dt_rmse = dt_rmse(target_data_copy[mask], input_data_copy[mask])
-        model_dt_rmse = dt_rmse(target_data_copy[mask], model_output_rescaled[mask])
+        linear_dt_rmse = dt_rmse(target_data[mask], input_tensors[mask])
+        model_dt_rmse = dt_rmse(target_data[mask], model_output[mask])
 
         model_md_rmse = np.sqrt(np.mean(np.square(md_orig - md_gen)[mask]))
         model_fa_rmse = np.sqrt(np.mean(np.square(fa_orig - fa_gen)[mask]))
@@ -297,6 +282,9 @@ if __name__ == '__main__':
     parser.add_argument('--patch_overlap', default=4)
 
     parser.add_argument('--upsamp_rate', type=float, default=1.25/0.7)
+
+    parser.add_argument('--clip_strategy', type=str, default='constant')
+    parser.add_argument('--clip_value', type=float, default=3e-3)
 
 ########################################################################################################################
 
