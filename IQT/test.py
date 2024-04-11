@@ -46,6 +46,7 @@ def main(model_type,
          clip_value,
          t1_data_dir,
          t1_subdir,
+         cluster_mode,
          patch_size,
          patch_overlap,
          max_noise_std):
@@ -72,9 +73,6 @@ def main(model_type,
                                                "T1w_acpc_dc_restore_brain")
 
         mask = np.array(test_data[..., 0] >= 0, dtype=bool)
-        mask_lr = np.array(zoom(test_data[..., 0],
-                                zoom=(1/upsamp_rate, 1/upsamp_rate, 1/upsamp_rate),
-                                order=1, prefilter=False) >= 0, dtype=bool)
 
         t1_rescale_factor = np.array(target_data.shape[:-1] + (1,)) / np.array(test_data_t1.shape)
 
@@ -162,7 +160,7 @@ def main(model_type,
 
         model_output = np.zeros(test_data.shape[:-1] + (6,))
 
-        for (i, j, k) in tqdm(run_indices, disable=False):
+        for (i, j, k) in tqdm(run_indices, disable=cluster_mode):
 
             i_patch = input_tensors[i - patch_size//2:i + patch_size//2,
                                     j - patch_size//2:j + patch_size//2,
@@ -185,9 +183,9 @@ def main(model_type,
         util.revert_normalization_combined(input_tensors, mask, norm_metrics_input,
                                            method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
 
-        md_orig, fa_orig, cfa_orig, eigv_orig = util.md_fa_cfa(target_data, mask, cluster_mode=True)
-        md_in, fa_in, cfa_in, eigv_in = util.md_fa_cfa(input_tensors, mask, cluster_mode=True)
-        md_gen, fa_gen, cfa_gen, eigv_gen = util.md_fa_cfa(model_output, mask, cluster_mode=True)
+        md_orig, fa_orig, cfa_orig, eigv_orig = util.md_fa_cfa(target_data, mask, cluster_mode=cluster_mode)
+        md_in, fa_in, cfa_in, eigv_in = util.md_fa_cfa(input_tensors, mask, cluster_mode=cluster_mode)
+        md_gen, fa_gen, cfa_gen, eigv_gen = util.md_fa_cfa(model_output, mask, cluster_mode=cluster_mode)
 
         linear_dt_rmse = dt_rmse(target_data[mask], input_tensors[mask])
         model_dt_rmse = dt_rmse(target_data[mask], model_output[mask])
@@ -263,8 +261,11 @@ if __name__ == '__main__':
 ########################################################################################################################
 
     parser.add_argument('--subjects', type=str, nargs='+',
-                        default=["221319", "178950", "224022", "627549", "885975",
-                                 "111009", "140420", "638049", "887373", "654754"])
+                        default=["221319", "178950", "224022", "627549", "885975", "111009", "140420", "638049",
+                                 "887373", "654754", "366446", "182739", "992774", "598568", "100307", "100307",
+                                 "160123", "351938", "732243", "193239", "570243", "547046", "586460", "157336",
+                                 "127933", "162733", "117324", "159340", "130013", "598568", "200614", "978578",
+                                 "992774", "865363"])
 
     parser.add_argument('--data_dir', default='/SAN/vision/hcp/DCA_HCP.2013.3_Proc')
     parser.add_argument('--data_subdir', default='T1w/Diffusion')
@@ -289,6 +290,7 @@ if __name__ == '__main__':
 ########################################################################################################################
 
     parser.add_argument('--max_noise_std', type=float, default=0.1)
+    parser.add_argument('--cluster_mode', type=bool, default=False)
 
     args = parser.parse_args()
 
