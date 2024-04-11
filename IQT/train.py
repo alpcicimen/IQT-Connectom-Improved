@@ -105,6 +105,8 @@ def main(model_type,
                          patch_size=patch_size[0],
                          t1_patch_size=patch_size[1] if len(patch_size) > 1 else patch_size[0])
 
+    loss_best = tf.float32.max
+
     match str(loss_type).lower():
         case "l1":
             loss_fn = l1_loss_fn
@@ -215,7 +217,11 @@ def main(model_type,
 
         train_seq.on_epoch_end()  # There's no need to shuffle for validation so shuffle only training
 
-        model.save_weights(os.path.join(output_dir, f"Run{run + 1}"))
+        if val_loss < loss_best:
+            loss_best = val_loss
+            model.save_weights(os.path.join(output_dir, "Run_Best"))
+
+        model.save_weights(os.path.join(output_dir, "Run_Last"))
 
 
 if __name__ == '__main__':
@@ -263,8 +269,8 @@ if __name__ == '__main__':
 
     # -------------------------------------------- Training Arguments --------------------------------------------------
 
-    parser.add_argument('--epochs', type=int, default=60,
-                        help='Number of epochs to run the model for. Default: 10')
+    parser.add_argument('--epochs', type=int, default=200,
+                        help='Number of epochs to run the model for. Default: 200')
 
     parser.add_argument('--loss_type', type=str, default='l1',
                         help='The loss type utilised during training. Possible values: [l1, l2]. Default: l1')
