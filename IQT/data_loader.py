@@ -119,7 +119,17 @@ class PairSequence(keras.utils.Sequence):
 
             t1_downsample_rate = np.array(subject_data_t1.shape[:-1]) / np.array(subject_data_hr.shape[:-1])
 
-            mask = np.array(subject_data_hr[..., 0] >= 0, dtype=bool)
+            mask = subject_data_hr[..., 0]
+
+            if hr_downsampling_rate > 1.:
+                mask = zoom(mask,
+                            zoom=(1. / hr_downsampling_rate,
+                                  1. / hr_downsampling_rate,
+                                  1. / hr_downsampling_rate),
+                            order=1,
+                            prefilter=False)
+
+            mask = np.array(mask >= 0, dtype=bool)
 
             subject_data_hr = subject_data_hr[..., 2:]
 
