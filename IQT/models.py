@@ -284,6 +284,12 @@ def unet3d_not1_v2(ipatch_size):
 
     d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(LeakyReLU()(d_layer2))
 
+    d_layer_n = Sequential([LeakyReLU(),
+                            Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same'),
+                            LeakyReLU(),
+                            Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')
+                            ])(d_layer_n)
+
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
                                       concat_layer=d_layer1,
                                       filter_size=6 * 6 * 6, kernel_size=5)
