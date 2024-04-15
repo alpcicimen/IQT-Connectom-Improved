@@ -162,7 +162,9 @@ def unet_upsample_layer_v2(prev_layer,
     if concat_layer is not None:
         conv = concatenate([conv, concat_layer], 4)
 
-    layer = []
+    layer = [Conv3D(filters=filter_size,
+                    kernel_size=3,
+                    padding="same")]
 
     for _ in range(rep_layers):
 
