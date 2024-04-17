@@ -124,54 +124,70 @@ def unet_upsample_layer(prev_layer,
 
 def unet_downsample_layer_v2(prev_layer,
                              filter_size,
+                             layer_number,
                              kernel_size=3,
-                             rep_layers=2):
+                             rep_layers=2,
+                             residual=True):
 
-    conv = Sequential([
-        Conv3D(filters=filter_size,
-               kernel_size=kernel_size,
-               padding="same",
-               strides=2),
-    ])
+    conv = Sequential([LeakyReLU(),
+                       Conv3D(filters=filter_size,
+                              kernel_size=kernel_size,
+                              padding="same",
+                              strides=2)], name=f'downsample_{layer_number}')(prev_layer)
+
+    rep = []
 
     for n in range(rep_layers):
-        conv.add(LeakyReLU())
-        conv.add(Conv3D(filters=filter_size,
-                        kernel_size=3,
-                        padding="same"))
+        rep.append(LeakyReLU())
+        rep.append(Conv3D(filters=filter_size,
+                          kernel_size=3,
+                          padding="same"))
 
-    pre_act = conv(prev_layer)
+    pre_act = Sequential(rep, name=f'downsample_{layer_number}_repeat')(conv)
+
+    if residual:
+        pre_act = Add()([pre_act, conv])
 
     return pre_act
 
 
 def unet_upsample_layer_v2(prev_layer,
                            filter_size,
+                           layer_number,
                            concat_layer=None,
                            kernel_size=3,
-                           rep_layers=2):
+                           rep_layers=2,
+                           residual=True):
 
     layer = Sequential([LeakyReLU(),
                         Conv3DTranspose(filters=filter_size,
                                         kernel_size=kernel_size*2,
                                         strides=2,
-                                        padding="same")])
+                                        padding="same")], name=f'upsample_{layer_number}')
 
     conv = layer(prev_layer)
 
     if concat_layer is not None:
         conv = concatenate([conv, concat_layer], 4)
 
-    layer = [Conv3D(filters=filter_size,
-                    kernel_size=3,
-                    padding="same")]
+    conv = Sequential([LeakyReLU(),
+                       Conv3D(filters=filter_size,
+                              kernel_size=3,
+                              padding="same")], name=f'fusion_{layer_number}')(conv)
+
+    rep = []
 
     for _ in range(rep_layers):
 
-        layer.append(LeakyReLU())
-        layer.append(Conv3D(filters=filter_size,
-                     kernel_size=3,
-                     padding="same"))
+        rep.append(LeakyReLU())
+        rep.append(Conv3D(filters=filter_size,
+                          kernel_size=3,
+                          padding="same"))
 
-    return Sequential(layer)(conv)
+    out = Sequential(rep, name=f'upsample_{layer_number}_repeat')(conv)
+
+    if residual:
+        out = Add()([out, conv])
+
+    return out
 
