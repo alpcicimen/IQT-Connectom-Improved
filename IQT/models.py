@@ -231,24 +231,17 @@ def unet3d_t1_v2(ipatch_size,
 
     t1_input = Sequential([Conv3D(kernel_size=5,
                                   strides=(2 if tw_patch_size is None else 1),  # Do not apply stride on custom T1 sizes
-                                  filters=1 * 6, padding='same'),
+                                  filters=6 * 6, padding='same'),
                            LeakyReLU(),
-                           Conv3D(kernel_size=5, filters=1 * 6, padding='same')])(t1_layer)
+                           Conv3D(kernel_size=5, filters=6 * 6, padding='same')])(t1_layer)
 
-    t1_d_layer1 = unet_downsample_layer_v2(LeakyReLU()(t1_input), kernel_size=5, filter_size=1 * 6 * 6)
-    t1_d_layer2 = unet_downsample_layer_v2(LeakyReLU()(t1_d_layer1), kernel_size=5, filter_size=1 * 6 * 6 * 6)
+    t1_d_layer1 = unet_downsample_layer_v2(LeakyReLU()(t1_input), kernel_size=5, filter_size=6 * 6 * 6)
+    t1_d_layer2 = unet_downsample_layer_v2(LeakyReLU()(t1_d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
 
     d_layer1 = unet_downsample_layer_v2(LeakyReLU()(conv_input), kernel_size=5, filter_size=6 * 6 * 6)
     d_layer2 = unet_downsample_layer_v2(LeakyReLU()(d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
 
-    d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(
-        LeakyReLU()(Concatenate(axis=4)([t1_d_layer2, d_layer2])))
-
-    d_layer_n = Sequential([LeakyReLU(),
-                            Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same'),
-                            LeakyReLU(),
-                            Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')
-                            ])(d_layer_n)
+    d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(LeakyReLU()(t1_d_layer2 + d_layer2))
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
                                       concat_layer=concatenate([d_layer1, t1_d_layer1], axis=4),
@@ -333,12 +326,6 @@ def unet3d_not1_v2(ipatch_size):
     d_layer2 = unet_downsample_layer_v2(LeakyReLU()(d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
 
     d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(LeakyReLU()(d_layer2))
-
-    d_layer_n = Sequential([LeakyReLU(),
-                            Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same'),
-                            LeakyReLU(),
-                            Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')
-                            ])(d_layer_n)
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
                                       concat_layer=d_layer1,
