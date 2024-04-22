@@ -188,20 +188,22 @@ class PairSequence(keras.utils.Sequence):
             t1_values = util.get_clip_values(subject_data_t1, mask,
                                              data_mode='t1w',
                                              clip_strategy='percentile',
-                                             value=99)
-
-            values = util.get_clip_values(subject_data_hr, mask, mode, clip_strategy, clip_value)
+                                             value=96)
 
             # Normalize at low-resolution space before applying linear interpolation to target resolution.
             # This is so that we properly simulate our input.
             util.apply_normalization_combined(subject_data_lr, mask,
                                               method=normalization_method,
                                               channels=norm_channels,
-                                              values=values)
+                                              values=util.get_clip_values(
+                                                  subject_data_hr, mask, mode, clip_strategy, clip_value
+                                              ))
             util.apply_normalization_combined(subject_data_hr, mask,
                                               method=normalization_method,
                                               channels=norm_channels,
-                                              values=values)
+                                              values=util.get_clip_values(
+                                                  subject_data_lr, mask, mode, clip_strategy, clip_value
+                                              ))
             util.apply_normalization_combined(subject_data_t1, mask,
                                               method=normalization_method,
                                               values=t1_values)
