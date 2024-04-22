@@ -196,13 +196,13 @@ class PairSequence(keras.utils.Sequence):
                                               method=normalization_method,
                                               channels=norm_channels,
                                               values=util.get_clip_values(
-                                                  subject_data_hr, mask, mode, clip_strategy, clip_value
+                                                  subject_data_lr, mask, mode, clip_strategy, clip_value
                                               ))
             util.apply_normalization_combined(subject_data_hr, mask,
                                               method=normalization_method,
                                               channels=norm_channels,
                                               values=util.get_clip_values(
-                                                  subject_data_lr, mask, mode, clip_strategy, clip_value
+                                                  subject_data_hr, mask, mode, clip_strategy, clip_value
                                               ))
             util.apply_normalization_combined(subject_data_t1, mask,
                                               method=normalization_method,
