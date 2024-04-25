@@ -209,6 +209,24 @@ def apply_normalization_combined(tensors, mask: NDArray[bool],
                 # Clip to account for unmasked voxels
                 tensors[..., c] = np.clip(tensors[..., c], 0, 1)
 
+        case "minmax-legacy":
+
+            norm_metrics = np.zeros((tensors.shape[-1], 2))
+
+            for c in range(tensors.shape[-1]):
+
+                mean = np.mean(tensors[mask, c])
+                std = np.std(tensors[mask, c])
+
+                norm_metrics[c, :] = np.array([mean - 2*std, mean + 2*std])
+
+                tensor = tensors[..., c]
+
+                tensors[..., c] = (tensor - norm_metrics[c, 0]) / (norm_metrics[c, 1] - norm_metrics[c, 0])
+
+                # Clip to account for unmasked voxels
+                tensors[..., c] = np.clip(tensors[..., c], 0, 1)
+
         case "stdscore":
             for i, c in sel_channels:
                 norm_metrics[i, :] = np.array([np.mean(tensors[..., c][mask]),
@@ -256,6 +274,11 @@ def revert_normalization_combined(tensors, mask, norm_metrics,
 
             for i, c in enumerate(sel_channels):
                 tensors[..., c] = (tensors[..., c] * (norm_metrics[i, 1] - norm_metrics[i, 0])) + norm_metrics[i, 0]
+
+        case "minmax-legacy":
+
+            for c in range(tensors.shape[-1]):
+                tensors[..., c] = (tensors[..., c] * (norm_metrics[c, 1] - norm_metrics[c, 0])) + norm_metrics[c, 0]
 
         case "stdscore":
             for i, c in enumerate(sel_channels):

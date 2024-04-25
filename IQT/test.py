@@ -136,10 +136,10 @@ def main(model_type,
                                                    value=clip_value)
 
         norm_metrics_input = util.apply_normalization_combined(test_data, mask,
-                                                               method='minmax',
+                                                               method='minmax-legacy',
                                                                channels=np.array([[0, 3, 5], [1, 2, 4]]),
                                                                values=norm_metrics_target)
-        util.apply_normalization_combined(t1_rescaled, mask, method='minmax', values=norm_metrics_t1)
+        util.apply_normalization_combined(t1_rescaled, mask, method='minmax-legacy', values=norm_metrics_t1)
 
 ########################################################################################################################
 
@@ -181,7 +181,7 @@ def main(model_type,
         util.revert_normalization_combined(model_output, mask, norm_metrics_input,
                                            method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
         util.revert_normalization_combined(input_tensors, mask, norm_metrics_input,
-                                           method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
+                                           method='minmax-legacy', channels=np.array([[0, 3, 5], [1, 2, 4]]))
 
         md_orig, fa_orig, cfa_orig, eigv_orig = util.md_fa_cfa(target_data, mask, cluster_mode=cluster_mode)
         md_in, fa_in, cfa_in, eigv_in = util.md_fa_cfa(input_tensors, mask, cluster_mode=cluster_mode)
