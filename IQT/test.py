@@ -67,7 +67,7 @@ def main(model_type,
 
         test_data, _ = util.load_dtis(os.path.join(data_dir, subj_id, data_subdir), "dt_b1000_")
 
-        target_data, _ = util.load_dtis(os.path.join(data_dir, subj_id, data_subdir), "dt_b1000_")
+        target_data, target_header = util.load_dtis(os.path.join(data_dir, subj_id, data_subdir), "dt_b1000_")
 
         test_data_t1, _ = util.load_structural(os.path.join(t1_data_dir, subj_id, t1_subdir),
                                                "T1w_acpc_dc_restore_brain")
@@ -130,16 +130,33 @@ def main(model_type,
                                                clip_strategy='percentile',
                                                value=99)
 
-        norm_metrics_target = util.get_clip_values(target_data, mask,
-                                                   'dti',
-                                                   clip_strategy=clip_strategy,
-                                                   value=clip_value)
+        norm_metrics_input = util.get_clip_values(test_data, mask,
+                                                  'dti',
+                                                  clip_strategy=clip_strategy,
+                                                  value=clip_value)
 
         norm_metrics_input = util.apply_normalization_combined(test_data, mask,
                                                                method='minmax',
                                                                channels=np.array([[0, 3, 5], [1, 2, 4]]),
-                                                               values=norm_metrics_target)
+                                                               values=norm_metrics_input)
         util.apply_normalization_combined(t1_rescaled, mask, method='minmax', values=norm_metrics_t1)
+
+        if clip_strategy == 'constant':
+            # target_data_clip_mask = np.zeros(target_data.shape)
+            #
+            # target_data_clip_mask[..., np.array([0, 3, 5])] = \
+            #     ((target_data[..., np.array([0, 3, 5])] < 0) |
+            #      (target_data[..., np.array([0, 3, 5])] > clip_value))
+            #
+            # target_data_clip_mask[..., np.array([1, 2, 4])] = \
+            #     ((target_data[..., np.array([1, 2, 4])] < 0) |
+            #      (target_data[..., np.array([1, 2, 4])] > clip_value))
+
+            target_data[..., np.array([0, 3, 5])] = np.clip(target_data[..., np.array([0, 3, 5])],
+                                                            a_min=0, a_max=clip_value)
+            target_data[..., np.array([1, 2, 4])] = np.clip(target_data[..., np.array([1, 2, 4])],
+                                                            a_min=-clip_value, a_max=clip_value)
+
 
 ########################################################################################################################
 

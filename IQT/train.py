@@ -49,6 +49,23 @@ def l1_loss_fn(output: tf.Tensor, target: tf.Tensor):
 
 
 @tf.function
+def md_corrected_l1_loss_fn(output: tf.Tensor, target: tf.Tensor):
+
+    diag_output = tf.stack([output[..., 0], output[..., 3], output[..., 5]], axis=4)
+    diag_target = tf.stack([target[..., 0], target[..., 3], target[..., 5]], axis=4)
+
+    off_diag_output = tf.stack([output[..., 1], output[..., 2], output[..., 4]], axis=4)
+    off_diag_target = tf.stack([target[..., 1], target[..., 2], target[..., 4]], axis=4)
+
+    md_output = tf.reduce_mean(diag_output, axis=4)
+    md_target = tf.reduce_mean(diag_target, axis=4)
+
+    return (tf.reduce_mean(tf.abs(diag_target - diag_output)) +
+            tf.reduce_mean(tf.abs(diag_target - md_target[..., None] - diag_output + md_output[..., None])) +
+            tf.reduce_mean(tf.abs(off_diag_target - off_diag_output)))
+
+
+@tf.function
 def l2_loss_fn(output: tf.Tensor, target: tf.Tensor):
     return tf.reduce_mean(tf.square(target - output))
 
@@ -110,6 +127,8 @@ def main(model_type,
     match str(loss_type).lower():
         case "l1":
             loss_fn = l1_loss_fn
+        case "md_corrected_l1":
+            loss_fn = md_corrected_l1_loss_fn
         case _:
             loss_fn = l2_loss_fn
 
@@ -273,7 +292,8 @@ if __name__ == '__main__':
                         help='Number of epochs to run the model for. Default: 200')
 
     parser.add_argument('--loss_type', type=str, default='l1',
-                        help='The loss type utilised during training. Possible values: [l1, l2]. Default: l1')
+                        help='The loss type utilised during training.' +
+                             'Possible values: [l1, md_corrected_l1, l2]. Default: l1')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='The learning rate of the model. Default: 1e-4')
     parser.add_argument('--lr_decay', default=None,
