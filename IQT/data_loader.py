@@ -190,23 +190,43 @@ class PairSequence(keras.utils.Sequence):
                                              clip_strategy='percentile',
                                              value=96)
 
-            # Normalize at low-resolution space before applying linear interpolation to target resolution.
-            # This is so that we properly simulate our input.
-            util.apply_normalization_combined(subject_data_lr, mask,
-                                              method=normalization_method,
-                                              channels=norm_channels,
-                                              values=util.get_clip_values(
-                                                  subject_data_lr, mask, mode, clip_strategy, clip_value
-                                              ))
-            util.apply_normalization_combined(subject_data_hr, mask,
-                                              method=normalization_method,
-                                              channels=norm_channels,
-                                              values=util.get_clip_values(
-                                                  subject_data_hr, mask, mode, clip_strategy, clip_value
-                                              ))
-            util.apply_normalization_combined(subject_data_t1, mask,
-                                              method=normalization_method,
-                                              values=t1_values)
+            # # Normalize at low-resolution space before applying linear interpolation to target resolution.
+            # # This is so that we properly simulate our input.
+            # util.apply_normalization_combined(subject_data_lr, mask,
+            #                                   method=normalization_method,
+            #                                   channels=norm_channels,
+            #                                   values=util.get_clip_values(
+            #                                       subject_data_lr, mask, mode, clip_strategy, clip_value
+            #                                   ))
+            # util.apply_normalization_combined(subject_data_hr, mask,
+            #                                   method=normalization_method,
+            #                                   channels=norm_channels,
+            #                                   values=util.get_clip_values(
+            #                                       subject_data_hr, mask, mode, clip_strategy, clip_value
+            #                                   ))
+            # util.apply_normalization_combined(subject_data_t1, mask,
+            #                                   method=normalization_method,
+            #                                   values=t1_values)
+
+########################################################################################################################
+
+# ------------------------------------------ Patch Setup (Danny's Suggestion) ------------------------------------------
+
+########################################################################################################################
+
+            md_hr, fa_hr, _, peigv_hr = util.md_fa_cfa(subject_data_hr, mask, cluster_mode=cluster_mode)
+
+            subject_data_hr = np.zeros(subject_data_hr.shape[:-1] + (4,))
+
+            subject_data_hr[..., 0] = np.clip((md_hr + 1.8e-3) / 3.6e-3, a_min=0, a_max=1)
+            subject_data_hr[..., 1:] = fa_hr[..., None] * np.abs(peigv_hr)
+
+            md_lr, fa_lr, _, peigv_lr = util.md_fa_cfa(subject_data_lr, mask, cluster_mode=cluster_mode)
+
+            subject_data_lr = np.zeros(subject_data_lr.shape[:-1] + (4,))
+
+            subject_data_lr[..., 0] = np.clip((md_lr + 1.8e-3) / 3.6e-3, a_min=0, a_max=1)
+            subject_data_lr[..., 1:] = fa_lr[..., None] * np.abs(peigv_lr)
 
 ########################################################################################################################
 

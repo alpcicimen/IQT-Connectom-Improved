@@ -128,18 +128,38 @@ def main(model_type,
         norm_metrics_t1 = util.get_clip_values(t1_rescaled, mask,
                                                data_mode='t1w',
                                                clip_strategy='percentile',
-                                               value=99)
+                                               value=96)
 
-        norm_metrics_target = util.get_clip_values(target_data, mask,
-                                                   'dti',
-                                                   clip_strategy=clip_strategy,
-                                                   value=clip_value)
+        # norm_metrics_target = util.get_clip_values(target_data, mask,
+        #                                            'dti',
+        #                                            clip_strategy=clip_strategy,
+        #                                            value=clip_value)
+        #
+        # norm_metrics_input = util.apply_normalization_combined(test_data, mask,
+        #                                                        method='minmax',
+        #                                                        channels=np.array([[0, 3, 5], [1, 2, 4]]),
+        #                                                        values=norm_metrics_target)
+        # util.apply_normalization_combined(t1_rescaled, mask, method='minmax', values=norm_metrics_t1)
 
-        norm_metrics_input = util.apply_normalization_combined(test_data, mask,
-                                                               method='minmax',
-                                                               channels=np.array([[0, 3, 5], [1, 2, 4]]),
-                                                               values=norm_metrics_target)
-        util.apply_normalization_combined(t1_rescaled, mask, method='minmax', values=norm_metrics_t1)
+########################################################################################################################
+
+# ------------------------------------------ Patch Setup (Danny's Suggestion) ------------------------------------------
+
+########################################################################################################################
+
+        md_hr, fa_hr, _, peigv_hr = util.md_fa_cfa(target_data, mask, cluster_mode=cluster_mode)
+
+        target_data = np.zeros(target_data.shape[:-1] + (4,))
+
+        target_data[..., 0] = np.clip((md_hr + 1.8e-3) / 3.6e-3, a_min=0, a_max=1)
+        target_data[..., 1:] = fa_hr[..., None] * np.abs(peigv_hr)
+
+        md_lr, fa_lr, _, peigv_lr = util.md_fa_cfa(test_data, mask, cluster_mode=cluster_mode)
+
+        test_data = np.zeros(test_data.shape[:-1] + (4,))
+
+        test_data[..., 0] = np.clip((md_lr + 1.8e-3) / 3.6e-3, a_min=0, a_max=1)
+        test_data[..., 1:] = fa_lr[..., None] * np.abs(peigv_lr)
 
 ########################################################################################################################
 
@@ -158,7 +178,7 @@ def main(model_type,
 
         run_indices = get_grid_indices(input_tensors, 8, 8, overlap=patch_overlap)
 
-        model_output = np.zeros(test_data.shape[:-1] + (6,))
+        model_output = np.zeros(test_data.shape[:-1] + (4,))
 
         for (i, j, k) in tqdm(run_indices, disable=cluster_mode):
 
@@ -178,14 +198,46 @@ def main(model_type,
                                                    patch_overlap:patch_size - patch_overlap,
                                                    patch_overlap:patch_size - patch_overlap]
 
-        util.revert_normalization_combined(model_output, mask, norm_metrics_input,
-                                           method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
-        util.revert_normalization_combined(input_tensors, mask, norm_metrics_input,
-                                           method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
+        # util.revert_normalization_combined(model_output, mask, norm_metrics_input,
+        #                                    method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
+        # util.revert_normalization_combined(input_tensors, mask, norm_metrics_input,
+        #                                    method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
 
-        md_orig, fa_orig, cfa_orig, eigv_orig = util.md_fa_cfa(target_data, mask, cluster_mode=cluster_mode)
-        md_in, fa_in, cfa_in, eigv_in = util.md_fa_cfa(input_tensors, mask, cluster_mode=cluster_mode)
-        md_gen, fa_gen, cfa_gen, eigv_gen = util.md_fa_cfa(model_output, mask, cluster_mode=cluster_mode)
+        # md_orig, fa_orig, cfa_orig, eigv_orig = util.md_fa_cfa(target_data, mask, cluster_mode=cluster_mode)
+        # md_in, fa_in, cfa_in, eigv_in = util.md_fa_cfa(input_tensors, mask, cluster_mode=cluster_mode)
+        # md_gen, fa_gen, cfa_gen, eigv_gen = util.md_fa_cfa(model_output, mask, cluster_mode=cluster_mode)
+
+        md_orig = (target_data[..., 0] * 3.6e-3) - 1.8e-3
+        md_in = (input_tensors[..., 0] * 3.6e-3) - 1.8e-3
+        md_gen = (model_output[..., 0] * 3.6e-3) - 1.8e-3
+
+        fa_orig = np.linalg.norm(target_data[..., 1:], axis=-1)
+        fa_in = np.linalg.norm(input_tensors[..., 1:], axis=-1)
+        fa_gen = np.linalg.norm(model_output[..., 1:], axis=-1)
+
+        cfa_orig = target_data[..., 1:]
+        cfa_in = input_tensors[..., 1:]
+        cfa_gen = model_output[..., 1:]
+
+        eigv_orig = cfa_orig / fa_orig[..., None]
+        eigv_in = cfa_in / fa_in[..., None]
+        eigv_gen = cfa_gen / fa_gen[..., None]
+
+        md_orig[~mask] = 0
+        md_in[~mask] = 0
+        md_gen[~mask] = 0
+
+        fa_orig[~mask] = 0
+        fa_in[~mask] = 0
+        fa_gen[~mask] = 0
+
+        cfa_orig[~mask] = 0
+        cfa_in[~mask] = 0
+        cfa_gen[~mask] = 0
+
+        eigv_orig[~mask] = 0
+        eigv_in[~mask] = 0
+        eigv_gen[~mask] = 0
 
         linear_dt_rmse = dt_rmse(target_data[mask], input_tensors[mask])
         model_dt_rmse = dt_rmse(target_data[mask], model_output[mask])
