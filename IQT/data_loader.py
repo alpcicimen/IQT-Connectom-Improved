@@ -218,14 +218,14 @@ class PairSequence(keras.utils.Sequence):
 
             subject_data_hr = np.zeros(subject_data_hr.shape[:-1] + (4,))
 
-            subject_data_hr[..., 0] = np.clip((md_hr + 1.8e-3) / 3.6e-3, a_min=0, a_max=1)
+            subject_data_hr[..., 0] = np.clip(md_hr / 1.8e-3, a_min=0, a_max=1)
             subject_data_hr[..., 1:] = fa_hr[..., None] * np.abs(peigv_hr)
 
             md_lr, fa_lr, _, peigv_lr = util.md_fa_cfa(subject_data_lr, mask, cluster_mode=cluster_mode)
 
             subject_data_lr = np.zeros(subject_data_lr.shape[:-1] + (4,))
 
-            subject_data_lr[..., 0] = np.clip((md_lr + 1.8e-3) / 3.6e-3, a_min=0, a_max=1)
+            subject_data_lr[..., 0] = np.clip(md_lr / 1.8e-3, a_min=0, a_max=1)
             subject_data_lr[..., 1:] = fa_lr[..., None] * np.abs(peigv_lr)
 
 ########################################################################################################################
