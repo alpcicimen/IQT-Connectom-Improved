@@ -44,21 +44,21 @@ def create_optim(lr,
 
 
 @tf.function
-def l1_loss_fn(output: tf.Tensor, target: tf.Tensor):
-    return tf.reduce_mean(tf.abs(target - output))
+def l1_loss_fn(output: tf.Tensor, target: tf.Tensor, mask: tf.Tensor):
+    return tf.reduce_mean(tf.boolean_mask(tf.abs(target - output), mask))
 
 
 @tf.function
-def l2_loss_fn(output: tf.Tensor, target: tf.Tensor):
-    return tf.reduce_mean(tf.square(target - output))
+def l2_loss_fn(output: tf.Tensor, target: tf.Tensor, mask: tf.Tensor):
+    return tf.reduce_mean(tf.boolean_mask(tf.square(target - output), mask))
 
 
 @tf.function
-def train_step(target_batch, input_batch, t1_batch):
+def train_step(target_batch, input_batch, t1_batch, mask_batch):
     with tf.GradientTape() as tape:
         model_output = model([input_batch, t1_batch], training=True)
 
-        loss = loss_fn(target_batch, model_output)
+        loss = loss_fn(target_batch, model_output, mask_batch)
 
     grads = tape.gradient(loss, model.trainable_weights)
 
@@ -68,10 +68,10 @@ def train_step(target_batch, input_batch, t1_batch):
 
 
 @tf.function
-def val_step(target_batch, input_batch, t1_batch):
+def val_step(target_batch, input_batch, t1_batch, mask_batch):
     model_output = model([input_batch, t1_batch])
 
-    return loss_fn(target_batch, model_output)
+    return loss_fn(target_batch, model_output, mask_batch)
 
 
 def main(model_type,
@@ -192,14 +192,14 @@ def main(model_type,
         if cluster_mode:
             time_start = time.time()
 
-        for (target_batch, (input_batch, t1_batch)) in tqdm(train_seq, disable=cluster_mode):
+        for (target_batch, (input_batch, t1_batch), mask_batch) in tqdm(train_seq, disable=cluster_mode):
 
-            closs = train_step(target_batch, input_batch, t1_batch)
+            closs = train_step(target_batch, input_batch, t1_batch, mask_batch)
             train_loss += closs
 
-        for (target_batch, (input_batch, t1_batch)) in tqdm(validation_seq, disable=cluster_mode):
+        for (target_batch, (input_batch, t1_batch), mask_batch) in tqdm(validation_seq, disable=cluster_mode):
 
-            val_loss += val_step(target_batch, input_batch, t1_batch)
+            val_loss += val_step(target_batch, input_batch, t1_batch, mask_batch)
 
         if cluster_mode:
             print("Time taken for run {}: {} seconds.".format((run + 1), time.time() - time_start))

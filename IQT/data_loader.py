@@ -254,6 +254,9 @@ class PairSequence(keras.utils.Sequence):
 
             for s, (i, j, k) in enumerate(tqdm(sel_mask_indices, disable=cluster_mode)):
                 comb_patch = np.concatenate([
+                    mask[i - patch_size // 2:i + round(patch_size / 2),
+                         j - patch_size // 2:j + round(patch_size / 2),
+                         k - patch_size // 2:k + round(patch_size / 2)][..., None],
                     subject_data_hr[i - patch_size // 2:i + round(patch_size / 2),
                                     j - patch_size // 2:j + round(patch_size / 2),
                                     k - patch_size // 2:k + round(patch_size / 2), :],
@@ -371,9 +374,10 @@ class PairSequence(keras.utils.Sequence):
             Due to random sampling and shuffling the patch at same index values will differ between epochs.
 
         :param index: The index value of the batch to acquire the patch from
-        :return: The acquired patch triplet of form `Tuple[tf.Tensor, tf.Tensor, tf.Tensor]`
+        :return: The acquired patch quadruplet of form `Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]`
         """
 
+        mask_patches = []
         target_patches = []
         input_patches = []
         t1_patches = []
@@ -381,16 +385,19 @@ class PairSequence(keras.utils.Sequence):
         for (subj, patch_indx) in self.__run_indices[index:min(self.__total_patches, index + self.batch_size)]:
             patch = np.load(os.path.join(self.pair_dir, subj, patch_indx))
 
-            hr_lim = (patch.shape[-1] - 1) // 2
+            hr_lim = (patch.shape[-1] - 1) // 2 + 1
 
-            target_patches.append(patch[..., :hr_lim])
+            mask_patches.append(patch[..., :1])
+            target_patches.append(patch[..., 1:hr_lim])
             input_patches.append(patch[..., hr_lim:-1])
 
             t1_patch = self.__augment_t1__(patch[..., -1:]) if self.t1_postprocess else patch[..., -1:]
             t1_patches.append(t1_patch)
 
         return (tf.cast(tf.stack(target_patches), dtype=tf.float32),
-                (tf.cast(tf.stack(input_patches), dtype=tf.float32), tf.cast(tf.stack(t1_patches), dtype=tf.float32)))
+                (tf.cast(tf.stack(input_patches), dtype=tf.float32),
+                 tf.cast(tf.stack(t1_patches), dtype=tf.float32)),
+                tf.cast(tf.stack(mask_patches)[..., 0], dtype=tf.bool))
 
     def sample_slice(self, subj, *_):
 
@@ -398,9 +405,9 @@ class PairSequence(keras.utils.Sequence):
 
         patch = np.load(os.path.join(self.pair_dir, self.subject_labels[subj], patch_indx))
 
-        hr_lim = (patch.shape[-1] - 1) // 2
+        hr_lim = (patch.shape[-1] - 1) // 2 + 1
 
-        t_patch = patch[..., :hr_lim][None, ...]
+        t_patch = patch[..., 1:hr_lim][None, ...]
         i_patch = patch[..., hr_lim:-1][None, ...]
         t1_patch = patch[..., -1:][None, ...]
 
