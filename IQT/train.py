@@ -12,7 +12,7 @@ global model
 global optim
 global loss_fn
 
-make_dataset = True
+make_dataset = False
 
 
 def create_optim(lr,
@@ -49,7 +49,7 @@ def l1_loss_fn(output: tf.Tensor, target: tf.Tensor):
 
 
 @tf.function
-def md_corrected_l1_loss_fn(output: tf.Tensor, target: tf.Tensor):
+def md_corrected_l1_loss_fn(output: tf.Tensor, target: tf.Tensor, alpha=1):
 
     diag_output = tf.stack([output[..., 0], output[..., 3], output[..., 5]], axis=4)
     diag_target = tf.stack([target[..., 0], target[..., 3], target[..., 5]], axis=4)
@@ -60,9 +60,15 @@ def md_corrected_l1_loss_fn(output: tf.Tensor, target: tf.Tensor):
     md_output = tf.reduce_mean(diag_output, axis=4)
     md_target = tf.reduce_mean(diag_target, axis=4)
 
-    return (tf.reduce_mean(tf.abs(diag_target - diag_output)) +
-            tf.reduce_mean(tf.abs(diag_target - md_target[..., None] - diag_output + md_output[..., None])) +
-            tf.reduce_mean(tf.abs(off_diag_target - off_diag_output)))
+    return tf.reduce_mean(tf.scalar_mul(alpha, tf.abs(md_output - md_target)) +
+                          tf.reduce_sum(
+                              tf.abs(
+                                  diag_target - md_target[..., None] - diag_output + md_output[..., None]),
+                              axis=-1) +
+                          tf.reduce_sum(
+                              tf.abs(off_diag_target - off_diag_output),
+                              axis=-1)
+                          )
 
 
 @tf.function
