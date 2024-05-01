@@ -124,11 +124,17 @@ def main(model_type,
 
 ########################################################################################################################
 
+        md_prenorm, fa_prenorm, _, eigv_prenorm = util.md_fa_cfa(test_data, mask)
+
+        util.save_md_fa_cfa(md_prenorm, fa_prenorm, eigv_prenorm,
+                            os.path.join(output_dir, "HCP_prenorm", subj_id),
+                            os.path.join(output_dir, f"{subj_id}_T1_resc"))
+
         # Clip T1w here
         norm_metrics_t1 = util.get_clip_values(t1_rescaled, mask,
                                                data_mode='t1w',
                                                clip_strategy='percentile',
-                                               value=99)
+                                               value=95)
 
         norm_metrics_target = util.get_clip_values(target_data, mask,
                                                    'dti',
@@ -140,6 +146,9 @@ def main(model_type,
                                                                channels=np.array([[0, 3, 5], [1, 2, 4]]),
                                                                values=norm_metrics_target)
         util.apply_normalization_combined(t1_rescaled, mask, method='minmax-legacy', values=norm_metrics_t1)
+
+        target_data[..., [0, 3, 5]] = np.clip(target_data[..., [0, 3, 5]], 0, 3e-3)
+        target_data[..., [1, 2, 4]] = np.clip(target_data[..., [1, 2, 4]], -3e-3, 3e-3)
 
 ########################################################################################################################
 
@@ -179,7 +188,7 @@ def main(model_type,
                                                    patch_overlap:patch_size - patch_overlap]
 
         util.revert_normalization_combined(model_output, mask, norm_metrics_input,
-                                           method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
+                                           method='minmax-legacy', channels=np.array([[0, 3, 5], [1, 2, 4]]))
         util.revert_normalization_combined(input_tensors, mask, norm_metrics_input,
                                            method='minmax-legacy', channels=np.array([[0, 3, 5], [1, 2, 4]]))
 
