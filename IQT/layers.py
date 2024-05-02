@@ -127,20 +127,21 @@ def unet_downsample_layer_v2(prev_layer,
                              kernel_size=3,
                              rep_layers=2):
 
-    conv = Sequential([
-        Conv3D(filters=filter_size,
-               kernel_size=kernel_size,
-               padding="same",
-               strides=2),
-    ])
+    conv = Sequential([])
+
+    pre_rep = Conv3D(filters=filter_size,
+                     kernel_size=kernel_size,
+                     padding="same",
+                     strides=2)(prev_layer)
 
     for n in range(rep_layers):
         conv.add(LeakyReLU())
+        conv.add(BatchNormalization(axis=-1))
         conv.add(Conv3D(filters=filter_size,
                         kernel_size=3,
                         padding="same"))
 
-    pre_act = conv(prev_layer)
+    pre_act = conv(pre_rep)
 
     return pre_act
 
@@ -152,6 +153,7 @@ def unet_upsample_layer_v2(prev_layer,
                            rep_layers=2):
 
     layer = Sequential([LeakyReLU(),
+                        BatchNormalization(axis=-1),
                         Conv3DTranspose(filters=filter_size,
                                         kernel_size=kernel_size*2,
                                         strides=2,
@@ -161,15 +163,19 @@ def unet_upsample_layer_v2(prev_layer,
 
     if concat_layer is not None:
         conv = concatenate([conv, concat_layer], 4)
+        conv = Conv3D(filters=filter_size,
+                      kernel_size=3,
+                      padding="same")(BatchNormalization(axis=-1)(LeakyReLU()(conv)))
 
     layer = []
 
     for _ in range(rep_layers):
 
         layer.append(LeakyReLU())
+        layer.append(BatchNormalization(axis=-1))
         layer.append(Conv3D(filters=filter_size,
-                     kernel_size=3,
-                     padding="same"))
+                            kernel_size=3,
+                            padding="same"))
 
     return Sequential(layer)(conv)
 

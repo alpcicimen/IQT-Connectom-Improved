@@ -128,7 +128,7 @@ def main(model_type,
         norm_metrics_t1 = util.get_clip_values(t1_rescaled, mask,
                                                data_mode='t1w',
                                                clip_strategy='percentile',
-                                               value=99)
+                                               value=96)
 
         norm_metrics_target = util.get_clip_values(target_data, mask,
                                                    'dti',
