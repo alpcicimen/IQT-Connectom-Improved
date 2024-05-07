@@ -129,17 +129,7 @@ def main(model_type,
                                                data_mode='t1w',
                                                clip_strategy='percentile',
                                                value=96)
-
-        # norm_metrics_target = util.get_clip_values(target_data, mask,
-        #                                            'dti',
-        #                                            clip_strategy=clip_strategy,
-        #                                            value=clip_value)
-        #
-        # norm_metrics_input = util.apply_normalization_combined(test_data, mask,
-        #                                                        method='minmax',
-        #                                                        channels=np.array([[0, 3, 5], [1, 2, 4]]),
-        #                                                        values=norm_metrics_target)
-        # util.apply_normalization_combined(t1_rescaled, mask, method='minmax', values=norm_metrics_t1)
+        util.apply_normalization_combined(t1_rescaled, mask, method='minmax', values=norm_metrics_t1)
 
 ########################################################################################################################
 
@@ -151,14 +141,14 @@ def main(model_type,
 
         target_data = np.zeros(target_data.shape[:-1] + (4,))
 
-        target_data[..., 0] = np.clip((md_hr + 1.8e-3) / 3.6e-3, a_min=0, a_max=1)
+        target_data[..., 0] = np.clip(md_hr / 1.8e-3, a_min=0, a_max=1)
         target_data[..., 1:] = fa_hr[..., None] * np.abs(peigv_hr)
 
         md_lr, fa_lr, _, peigv_lr = util.md_fa_cfa(test_data, mask, cluster_mode=cluster_mode)
 
         test_data = np.zeros(test_data.shape[:-1] + (4,))
 
-        test_data[..., 0] = np.clip((md_lr + 1.8e-3) / 3.6e-3, a_min=0, a_max=1)
+        test_data[..., 0] = np.clip(md_lr / 1.8e-3, a_min=0, a_max=1)
         test_data[..., 1:] = fa_lr[..., None] * np.abs(peigv_lr)
 
 ########################################################################################################################
@@ -182,6 +172,11 @@ def main(model_type,
 
         for (i, j, k) in tqdm(run_indices, disable=cluster_mode):
 
+            if np.sum(mask[i - patch_size//2:i + patch_size//2,
+                           j - patch_size//2:j + patch_size//2,
+                           k - patch_size//2:k + patch_size//2]) == 0:
+                continue
+
             i_patch = input_tensors[i - patch_size//2:i + patch_size//2,
                                     j - patch_size//2:j + patch_size//2,
                                     k - patch_size//2:k + patch_size//2][None, ...]
@@ -190,26 +185,19 @@ def main(model_type,
                                    j - patch_size//2:j + patch_size//2,
                                    k - patch_size//2:k + patch_size//2][None, ...]
 
+            model_out = model([i_patch, t1_patch]).numpy()
+
             model_output[i - patch_size//2 + patch_overlap:i + patch_size//2 - patch_overlap,
                          j - patch_size//2 + patch_overlap:j + patch_size//2 - patch_overlap,
                          k - patch_size//2 + patch_overlap:k + patch_size//2 - patch_overlap, :] += \
-                model([i_patch, t1_patch]).numpy()[0,
-                                                   patch_overlap:patch_size - patch_overlap,
-                                                   patch_overlap:patch_size - patch_overlap,
-                                                   patch_overlap:patch_size - patch_overlap]
+                model_out[0,
+                          patch_overlap:patch_size - patch_overlap,
+                          patch_overlap:patch_size - patch_overlap,
+                          patch_overlap:patch_size - patch_overlap]
 
-        # util.revert_normalization_combined(model_output, mask, norm_metrics_input,
-        #                                    method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
-        # util.revert_normalization_combined(input_tensors, mask, norm_metrics_input,
-        #                                    method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
-
-        # md_orig, fa_orig, cfa_orig, eigv_orig = util.md_fa_cfa(target_data, mask, cluster_mode=cluster_mode)
-        # md_in, fa_in, cfa_in, eigv_in = util.md_fa_cfa(input_tensors, mask, cluster_mode=cluster_mode)
-        # md_gen, fa_gen, cfa_gen, eigv_gen = util.md_fa_cfa(model_output, mask, cluster_mode=cluster_mode)
-
-        md_orig = (target_data[..., 0] * 3.6e-3) - 1.8e-3
-        md_in = (input_tensors[..., 0] * 3.6e-3) - 1.8e-3
-        md_gen = (model_output[..., 0] * 3.6e-3) - 1.8e-3
+        md_orig = target_data[..., 0] * 1.8e-3
+        md_in = input_tensors[..., 0] * 1.8e-3
+        md_gen = model_output[..., 0] * 1.8e-3
 
         fa_orig = np.linalg.norm(target_data[..., 1:], axis=-1)
         fa_in = np.linalg.norm(input_tensors[..., 1:], axis=-1)
@@ -239,16 +227,35 @@ def main(model_type,
         eigv_in[~mask] = 0
         eigv_gen[~mask] = 0
 
-        linear_dt_rmse = dt_rmse(target_data[mask], input_tensors[mask])
-        model_dt_rmse = dt_rmse(target_data[mask], model_output[mask])
-
         model_md_rmse = np.sqrt(np.mean(np.square(md_orig - md_gen)[mask]))
         model_fa_rmse = np.sqrt(np.mean(np.square(fa_orig - fa_gen)[mask]))
-        model_cfa_rmse = np.sqrt(np.mean(np.square(cfa_orig - cfa_gen)[mask]))
+
+        # Cosine similarity calculation. The CFA is a directional vector with normalized values.
+        # This means that the angular difference is a maximum of 90 degrees, for which the cosine range is between [0,1]
+        denom = np.multiply(np.linalg.norm(cfa_gen, axis=-1), np.linalg.norm(cfa_orig, axis=-1))
+        model_cosine_sim = np.sum(np.multiply(cfa_gen, cfa_orig), axis=-1) / denom
+
+        # Penalise the cosine difference at max for NaN values.
+        # Most likely reason for NaN is the nonmasked areas, which aren't included in the mean,
+        # but in case NaN persists to masked we treat as maximum difference
+        model_cosine_sim[np.isnan(model_cosine_sim)] = 0
+
+        model_cosine_sim = np.mean(model_cosine_sim[mask])
 
         linear_md_rmse = np.sqrt(np.mean(np.square(md_orig - md_in)[mask]))
         linear_fa_rmse = np.sqrt(np.mean(np.square(fa_orig - fa_in)[mask]))
-        linear_cfa_rmse = np.sqrt(np.mean(np.square(cfa_orig - cfa_in)[mask]))
+
+        # Cosine similarity calculation. The CFA is a directional vector with normalized values.
+        # This means that the angular difference is a maximum of 90 degrees, for which the cosine range is between [0,1]
+        denom = np.multiply(np.linalg.norm(cfa_in, axis=-1), np.linalg.norm(cfa_orig, axis=-1))
+        linear_cosine_sim = np.sum(np.multiply(cfa_in, cfa_orig), axis=-1) / denom
+
+        # Penalise the cosine difference at max for NaN values.
+        # Most likely reason for NaN is the nonmasked areas, which aren't included in the mean,
+        # but in case NaN persists to masked we treat as maximum difference
+        linear_cosine_sim[np.isnan(linear_cosine_sim)] = 0
+
+        linear_cosine_sim = np.mean(linear_cosine_sim[mask])
 
         model_md_ssim = ssim(md_gen, md_orig, data_range=np.max(md_orig) - np.min(md_orig))
         linear_md_ssim = ssim(md_in, md_orig, data_range=np.max(md_orig) - np.min(md_orig))
@@ -257,16 +264,14 @@ def main(model_type,
         linear_fa_ssim = ssim(fa_in, fa_orig, data_range=np.max(fa_orig) - np.min(fa_orig))
 
         df.append({'Subject': subj_id,
-                   'DT-RMSE_Linear': linear_dt_rmse,
                    'RMSE_MD_Linear': linear_md_rmse,
                    'RMSE_FA_Linear': linear_fa_rmse,
-                   'RMSE_CFA_Linear': linear_cfa_rmse,
+                   'CFA_Cos_Sim_Linear': linear_cosine_sim,
                    'SSIM_MD_Linear': linear_md_ssim,
                    'SSIM_FA_Linear': linear_fa_ssim,
-                   'DT-RMSE_Model': model_dt_rmse,
                    'RMSE_MD_Model': model_md_rmse,
                    'RMSE_FA_Model': model_fa_rmse,
-                   'RMSE_CFA_Model': model_cfa_rmse,
+                   'CFA_Cos_Sim_Model': model_cosine_sim,
                    'SSIM_MD_Model': model_md_ssim,
                    'SSIM_FA_Model': model_fa_ssim})
 

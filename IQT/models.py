@@ -310,7 +310,7 @@ def unet3d_not1_v2(ipatch_size):
 
     i_layer = KL.Input(shape=[ipatch_size,
                                         ipatch_size,
-                                        ipatch_size, 6], name='input', dtype=tf.float32)
+                                        ipatch_size, 4], name='input', dtype=tf.float32)
 
     __tw_patch_size = ipatch_size
 
@@ -318,25 +318,25 @@ def unet3d_not1_v2(ipatch_size):
                                __tw_patch_size,
                                __tw_patch_size, 1], name='input_t1', dtype=tf.float32) # T1 input disconnected
 
-    conv_input = Sequential([Conv3D(kernel_size=5, filters=6 * 6, padding='same'),
+    conv_input = Sequential([Conv3D(kernel_size=5, filters=4 * 6, padding='same'),
                              LeakyReLU(),
-                             Conv3D(kernel_size=5, filters=6 * 6, padding='same')])(i_layer)
+                             Conv3D(kernel_size=5, filters=4 * 6, padding='same')])(i_layer)
 
-    d_layer1 = unet_downsample_layer_v2(LeakyReLU()(conv_input), kernel_size=5, filter_size=6 * 6 * 6)
-    d_layer2 = unet_downsample_layer_v2(LeakyReLU()(d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
+    d_layer1 = unet_downsample_layer_v2(LeakyReLU()(conv_input), kernel_size=5, filter_size=4 * 6 * 6)
+    d_layer2 = unet_downsample_layer_v2(LeakyReLU()(d_layer1), kernel_size=5, filter_size=4 * 6 * 6 * 6)
 
-    d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(LeakyReLU()(d_layer2))
+    d_layer_n = Conv3D(kernel_size=3, filters=4 * 6 * 6 * 6, padding='same')(LeakyReLU()(d_layer2))
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
                                       concat_layer=d_layer1,
-                                      filter_size=6 * 6 * 6, kernel_size=5)
+                                      filter_size=4 * 6 * 6, kernel_size=5)
     u_layer2 = unet_upsample_layer_v2(u_layer1,
                                       concat_layer=conv_input,
-                                      filter_size=6 * 6, kernel_size=5)
+                                      filter_size=4 * 6, kernel_size=5)
 
     o_layer = LeakyReLU()(u_layer2)
 
-    o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(o_layer)
+    o_layer = Conv3D(kernel_size=5, filters=4, padding='same', dtype=tf.float32)(o_layer)
 
     o_layer = tanh(o_layer) + i_layer
 
