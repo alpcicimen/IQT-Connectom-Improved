@@ -376,6 +376,8 @@ def apply_gaussian_filter(input: NDArray[float], downsample_rate) -> NDArray[flo
                                                                    kernel_grid[..., 1] ** 2 +
                                                                    kernel_grid[..., 2] ** 2) / (2 * std_value ** 2))
 
+    gaussian_kernel /= np.sum(gaussian_kernel)
+
     if len(input.shape) == 3:
         return convolve(input, gaussian_kernel, mode='constant')
     else:
