@@ -136,6 +136,7 @@ def unet_downsample_layer_v2(prev_layer,
 
     for n in range(rep_layers):
         conv.add(LeakyReLU())
+        conv.add(BatchNormalization())
         conv.add(Conv3D(filters=filter_size,
                         kernel_size=3,
                         padding="same"))
@@ -152,6 +153,7 @@ def unet_upsample_layer_v2(prev_layer,
                            rep_layers=2):
 
     layer = Sequential([LeakyReLU(),
+                        BatchNormalization(),
                         Conv3DTranspose(filters=filter_size,
                                         kernel_size=kernel_size*2,
                                         strides=2,
@@ -167,6 +169,7 @@ def unet_upsample_layer_v2(prev_layer,
     for _ in range(rep_layers):
 
         layer.append(LeakyReLU())
+        layer.append(BatchNormalization())
         layer.append(Conv3D(filters=filter_size,
                      kernel_size=3,
                      padding="same"))
