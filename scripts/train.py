@@ -69,7 +69,7 @@ def train_step(target_batch, input_batch, t1_batch):
 
 @tf.function
 def val_step(target_batch, input_batch, t1_batch):
-    model_output = model([input_batch, t1_batch])
+    model_output = model([input_batch, t1_batch], training=False)
 
     return loss_fn(target_batch, model_output)
 
@@ -83,7 +83,8 @@ def main(model_type,
          training_subjects,
          validation_subjects,
          scratch_dir,
-         downsampling_rate,
+         downsampling_rates,
+         hr_downsampling_rate,
          clip_strategy,
          clip_value,
          hr_subdir,
@@ -123,15 +124,15 @@ def main(model_type,
                                    t1_data_dir=t1_data_dir,
                                    subject_labels=training_subjects,
                                    pairs_dir=os.path.join(scratch_dir, "training"),
-                                   downsampling_rate=downsampling_rate[0],
-                                   hr_downsampling_rate=1. if len(downsampling_rate) <= 1 else downsampling_rate[1],
+                                   downsampling_rates=downsampling_rates,
+                                   hr_downsampling_rate=hr_downsampling_rate,
                                    hr_filedir=os.path.join(hr_subdir, hr_file_head),
                                    t1_filedir=os.path.join(t1_subdir, t1_file_head),
                                    mode='dti',
                                    normalization_method='minmax',
                                    clip_strategy=clip_strategy,
                                    clip_value=clip_value,
-                                   patch_spacing=8,
+                                   patch_spacing=12,
                                    patch_size=patch_size[0],
                                    mask_erosion=mask_erosion,
                                    cluster_mode=cluster_mode)
@@ -142,8 +143,8 @@ def main(model_type,
                                    t1_data_dir=t1_data_dir,
                                    subject_labels=validation_subjects,
                                    pairs_dir=os.path.join(scratch_dir, "validation"),
-                                   downsampling_rate=downsampling_rate[0],
-                                   hr_downsampling_rate=1. if len(downsampling_rate) <= 1 else downsampling_rate[1],
+                                   downsampling_rates=downsampling_rates,
+                                   hr_downsampling_rate=hr_downsampling_rate,
                                    hr_filedir=os.path.join(hr_subdir, hr_file_head),
                                    t1_filedir=os.path.join(t1_subdir, t1_file_head),
                                    mode='dti',
@@ -161,7 +162,7 @@ def main(model_type,
     train_seq = PairSequence(pair_dir=os.path.join(scratch_dir, "training"),
                              subject_labels=training_subjects,
                              batch_size=batch_size,
-                             pairs_per_subject=200,
+                             pairs_per_subject=400,
                              t1_postprocess=True)
 
     validation_seq = PairSequence(pair_dir=os.path.join(scratch_dir, "validation"),
@@ -212,7 +213,7 @@ def main(model_type,
             tf.summary.scalar('Validation Epoch Mean Loss', val_loss / len(validation_seq), step=run)
 
             tf.summary.image('Model Output Slice',
-                             model([sample_i, sample_t1])[:, :, 7, :, 0:1],
+                             model([sample_i, sample_t1], training=False)[:, :, 7, :, 0:1],
                              step=run)
 
         train_seq.on_epoch_end()  # There's no need to shuffle for validation so shuffle only training
@@ -305,10 +306,11 @@ if __name__ == '__main__':
     parser.add_argument('--patch_size', type=int, nargs='+', default=[16])
     #  Unfortunately bash does not natively support floating point operations, so a possible workaround would be to
     #  calculate the proper floating point before supplying it as a command-line argument.
-    parser.add_argument('--downsampling_rate', type=float, nargs='+', default=[1.25/0.7, 1.])
+    parser.add_argument('--downsampling_rates', type=float, nargs='+', default=[1.25, 1.5, 1.78, 2.0, 2.5])
+    parser.add_argument('--hr_downsampling_rate', type=float, default=1.)
 
     parser.add_argument('--clip_strategy', type=str, default='constant')
-    parser.add_argument('--clip_value', type=float, default=3e-3)
+    parser.add_argument('--clip_value', type=float, default=1.8e-3)
 
     parser.add_argument('--batch_size', type=int, default=6)
     parser.add_argument('--mask_erosion', type=int, default=5)
