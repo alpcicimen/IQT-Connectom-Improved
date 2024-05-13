@@ -24,17 +24,15 @@ class PairSequence(keras.utils.Sequence):
                       t1_data_dir,
                       subject_labels,
                       pairs_dir,
-                      downsampling_rate=1.25 / .7,
+                      downsampling_rates=[1.25 / .7],
                       hr_downsampling_rate=1.,
                       hr_filedir=os.path.join('HR', 'dt_b1000_'),
                       t1_filedir=os.path.join('T1w', 'T1w_acpc_dc_restore_brain'),
                       mode='dti',
-                      normalization_method='stdscore',
-                      # clip_strategy='percentile',
-                      # clip_value=95,
+                      normalization_method='minmax',
                       clip_strategy='constant',
                       clip_value=3e-3,
-                      patch_spacing=8,
+                      patch_spacing=12,
                       patch_size=16,
                       mask_erosion=0,
                       random_shift=True,
@@ -49,8 +47,8 @@ class PairSequence(keras.utils.Sequence):
             t1_data_dir: The file directory for the T1w images
             subject_labels: The list of subjects to be utilised
             pairs_dir: The directory where the calculated pairs (or triplets with T1) will be stored at
-            downsampling_rate: The downsampling rate of the patch preprocessor.
-                The HR data is *downsampled* by this ratio.
+            downsampling_rates: The downsampling rates of the patch preprocessor.
+                The HR data is *downsampled* by this ratio for each ratio provided.
             hr_downsampling_rate: The downsampling rate of the target \"high resolution\" image.
             hr_filedir: The file directory for individual diffusion tensors.
             t1_filedir: The file directory for the T1w images.
@@ -95,7 +93,8 @@ class PairSequence(keras.utils.Sequence):
         if hr_downsampling_rate < 1.:  # Up-sampling is not supported! (A value of 1 is allowed)
             raise ValueError("Only values larger than 1 are supported.")
 
-        assert downsampling_rate > 1.  # Up-sampling is not supported!
+        for downsampling_rate in downsampling_rates:
+            assert downsampling_rate > 1.  # Up-sampling is not supported!
 
         for subject_label in subject_labels:
 
@@ -105,21 +104,19 @@ class PairSequence(keras.utils.Sequence):
             if not os.path.exists(os.path.join(pairs_dir, subject_label)):
                 os.makedirs(os.path.join(pairs_dir, subject_label))
 
-            subject_data_hr, hr_header = loader_func(
+            subject_data_base, hr_header = loader_func(
                 os.path.join(diff_data_dir, subject_label),
                 hr_filedir
             )
 
-            subject_data_lr = np.copy(subject_data_hr[..., 2:])
-
-            subject_data_t1, t1_header = util.load_structural(
+            subject_data_t1_base, t1_header = util.load_structural(
                 os.path.join(t1_data_dir, subject_label),
                 t1_filedir
             )
 
-            t1_downsample_rate = np.array(subject_data_t1.shape[:-1]) / np.array(subject_data_hr.shape[:-1])
+            t1_downsample_rate = np.array(subject_data_t1_base.shape[:-1]) / np.array(subject_data_base.shape[:-1])
 
-            mask = subject_data_hr[..., 0]
+            mask = subject_data_base[..., 0]
 
             if hr_downsampling_rate > 1.:
                 mask = zoom(mask,
@@ -129,14 +126,12 @@ class PairSequence(keras.utils.Sequence):
                             order=1,
                             prefilter=False)
 
-            mask = np.array(mask >= 0, dtype=bool)
-
-            subject_data_hr = subject_data_hr[..., 2:]
+            mask_base = np.array(mask >= 0, dtype=bool)
 
             # The masks may have problematic outlier voxels if they were not fine-tuned.
             # Therefore, we just erode them further.
             if mask_erosion:
-                mask = binary_erosion(mask, np.ones((mask_erosion, mask_erosion, mask_erosion)))
+                mask_base = binary_erosion(mask_base, np.ones((mask_erosion, mask_erosion, mask_erosion)))
 
 ########################################################################################################################
 
@@ -144,40 +139,47 @@ class PairSequence(keras.utils.Sequence):
 
 ########################################################################################################################
 
-            if apply_blurring:
+            for ds, downsampling_rate in enumerate(downsampling_rates):
+
+                subject_data_hr = np.copy(subject_data_base[..., 2:])
+                subject_data_lr = np.copy(subject_data_base[..., 2:])
+                subject_data_t1 = np.copy(subject_data_t1_base)
+                mask = np.copy(mask_base)
+
+                if apply_blurring:
+
+                    if hr_downsampling_rate > 1.:
+                        subject_data_hr = util.apply_gaussian_filter(subject_data_hr, hr_downsampling_rate)
+
+                    subject_data_lr = util.apply_gaussian_filter(subject_data_lr,
+                                                                 downsampling_rate * hr_downsampling_rate)
+                    subject_data_t1 = util.apply_gaussian_filter(subject_data_t1,
+                                                                 np.mean(t1_downsample_rate) * hr_downsampling_rate)
 
                 if hr_downsampling_rate > 1.:
-                    subject_data_hr = util.apply_gaussian_filter(subject_data_hr, hr_downsampling_rate)
+                    subject_data_hr = zoom(subject_data_hr,
+                                           zoom=(1. / hr_downsampling_rate,
+                                                 1. / hr_downsampling_rate,
+                                                 1. / hr_downsampling_rate, 1),
+                                           order=1,
+                                           prefilter=False)
 
-                subject_data_lr = util.apply_gaussian_filter(subject_data_lr,
-                                                             downsampling_rate * hr_downsampling_rate)
-                subject_data_t1 = util.apply_gaussian_filter(subject_data_t1,
-                                                             np.mean(t1_downsample_rate) * hr_downsampling_rate)
-
-            if hr_downsampling_rate > 1.:
-                subject_data_hr = zoom(subject_data_hr,
-                                       zoom=(1. / hr_downsampling_rate,
-                                             1. / hr_downsampling_rate,
-                                             1. / hr_downsampling_rate, 1),
+                subject_data_lr = zoom(subject_data_lr,
+                                       zoom=(1. / (hr_downsampling_rate * downsampling_rate),
+                                             1. / (hr_downsampling_rate * downsampling_rate),
+                                             1. / (hr_downsampling_rate * downsampling_rate), 1),
                                        order=1,
                                        prefilter=False)
 
-            subject_data_lr = zoom(subject_data_lr,
-                                   zoom=(1. / (hr_downsampling_rate * downsampling_rate),
-                                         1. / (hr_downsampling_rate * downsampling_rate),
-                                         1. / (hr_downsampling_rate * downsampling_rate), 1),
-                                   order=1,
-                                   prefilter=False)
+                target_scales = (np.array(subject_data_hr.shape[:-1] + (1,)) /
+                                 np.array(subject_data_t1.shape))
 
-            target_scales = (np.array(subject_data_hr.shape[:-1] + (1,)) /
-                             np.array(subject_data_t1.shape))
+                subject_data_t1 = zoom(subject_data_t1, target_scales, order=1, prefilter=False)
 
-            subject_data_t1 = zoom(subject_data_t1, target_scales, order=1, prefilter=False)
+                lr_dims = (np.array(subject_data_hr.shape[:-1] + (1,)) /
+                           np.array(subject_data_lr.shape[:-1] + (1,)))
 
-            lr_dims = (np.array(subject_data_hr.shape[:-1] + (1,)) /
-                       np.array(subject_data_lr.shape[:-1] + (1,)))
-
-            subject_data_lr = zoom(subject_data_lr, lr_dims, order=1, prefilter=False)
+                subject_data_lr = zoom(subject_data_lr, lr_dims, order=1, prefilter=False)
 
 ########################################################################################################################
 
@@ -185,28 +187,28 @@ class PairSequence(keras.utils.Sequence):
 
 ########################################################################################################################
 
-            t1_values = util.get_clip_values(subject_data_t1, mask,
-                                             data_mode='t1w',
-                                             clip_strategy='percentile',
-                                             value=96)
+                t1_values = util.get_clip_values(subject_data_t1, mask,
+                                                 data_mode='t1w',
+                                                 clip_strategy='percentile',
+                                                 value=96)
 
-            # Normalize at low-resolution space before applying linear interpolation to target resolution.
-            # This is so that we properly simulate our input.
-            util.apply_normalization_combined(subject_data_lr, mask,
-                                              method=normalization_method,
-                                              channels=norm_channels,
-                                              values=util.get_clip_values(
-                                                  subject_data_lr, mask, mode, clip_strategy, clip_value
-                                              ))
-            util.apply_normalization_combined(subject_data_hr, mask,
-                                              method=normalization_method,
-                                              channels=norm_channels,
-                                              values=util.get_clip_values(
-                                                  subject_data_hr, mask, mode, clip_strategy, clip_value
-                                              ))
-            util.apply_normalization_combined(subject_data_t1, mask,
-                                              method=normalization_method,
-                                              values=t1_values)
+                # Normalize at low-resolution space before applying linear interpolation to target resolution.
+                # This is so that we properly simulate our input.
+                util.apply_normalization_combined(subject_data_lr, mask,
+                                                  method=normalization_method,
+                                                  channels=norm_channels,
+                                                  values=util.get_clip_values(
+                                                      subject_data_lr, mask, mode, clip_strategy, clip_value
+                                                  ))
+                util.apply_normalization_combined(subject_data_hr, mask,
+                                                  method=normalization_method,
+                                                  channels=norm_channels,
+                                                  values=util.get_clip_values(
+                                                      subject_data_hr, mask, mode, clip_strategy, clip_value
+                                                  ))
+                util.apply_normalization_combined(subject_data_t1, mask,
+                                                  method=normalization_method,
+                                                  values=t1_values)
 
 ########################################################################################################################
 
@@ -214,62 +216,62 @@ class PairSequence(keras.utils.Sequence):
 
 ########################################################################################################################
 
-            subject_data_lr[~mask, :] = 0
-            subject_data_hr[~mask, :] = 0
-            subject_data_t1[~mask, :] = 0
+                subject_data_lr[~mask, :] = 0
+                subject_data_hr[~mask, :] = 0
+                subject_data_t1[~mask, :] = 0
 
-            subject_data_lr = np.pad(subject_data_lr,  # Pad to ensure that there's no possible misshapen patch size
-                                     pad_width=np.array([[patch_size // 2, patch_size // 2],
-                                                         [patch_size // 2, patch_size // 2],
-                                                         [patch_size // 2, patch_size // 2],
-                                                         [0, 0]]), mode='edge')
+                subject_data_lr = np.pad(subject_data_lr,  # Pad to ensure that there's no possible misshapen patch size
+                                         pad_width=np.array([[patch_size // 2, patch_size // 2],
+                                                             [patch_size // 2, patch_size // 2],
+                                                             [patch_size // 2, patch_size // 2],
+                                                             [0, 0]]), mode='edge')
 
-            subject_data_hr = np.pad(subject_data_hr,
-                                     pad_width=np.array([[patch_size // 2, patch_size // 2],
-                                                         [patch_size // 2, patch_size // 2],
-                                                         [patch_size // 2, patch_size // 2],
-                                                         [0, 0]]), mode='edge')
+                subject_data_hr = np.pad(subject_data_hr,
+                                         pad_width=np.array([[patch_size // 2, patch_size // 2],
+                                                             [patch_size // 2, patch_size // 2],
+                                                             [patch_size // 2, patch_size // 2],
+                                                             [0, 0]]), mode='edge')
 
-            subject_data_t1 = np.pad(subject_data_t1,
-                                     pad_width=np.array([[patch_size // 2, patch_size // 2],
-                                                         [patch_size // 2, patch_size // 2],
-                                                         [patch_size // 2, patch_size // 2],
-                                                         [0, 0]]), mode='edge')
+                subject_data_t1 = np.pad(subject_data_t1,
+                                         pad_width=np.array([[patch_size // 2, patch_size // 2],
+                                                             [patch_size // 2, patch_size // 2],
+                                                             [patch_size // 2, patch_size // 2],
+                                                             [0, 0]]), mode='edge')
 
-            mask = np.pad(mask, pad_width=np.array([[patch_size // 2, patch_size // 2],
-                                                    [patch_size // 2, patch_size // 2],
-                                                    [patch_size // 2, patch_size // 2]]), mode='edge')
+                mask = np.pad(mask, pad_width=np.array([[patch_size // 2, patch_size // 2],
+                                                        [patch_size // 2, patch_size // 2],
+                                                        [patch_size // 2, patch_size // 2]]), mode='edge')
 
-            sel_mask_indices = np.zeros(mask.shape, dtype=bool)
+                sel_mask_indices = np.zeros(mask.shape, dtype=bool)
 
-            randshift = (randint(0, patch_spacing // 4),
-                         randint(0, patch_spacing // 4),
-                         randint(0, patch_spacing // 4)) if random_shift else (0, 0, 0)
+                randshift = (randint(0, patch_spacing // 4),
+                             randint(0, patch_spacing // 4),
+                             randint(0, patch_spacing // 4)) if random_shift else (0, 0, 0)
 
-            sel_mask_indices[randshift[0]::patch_spacing,
-                             randshift[1]::patch_spacing,
-                             randshift[2]::patch_spacing] = True
+                sel_mask_indices[randshift[0]::patch_spacing,
+                                 randshift[1]::patch_spacing,
+                                 randshift[2]::patch_spacing] = True
 
-            sel_mask_indices = np.array(np.where(sel_mask_indices & mask)).T
+                sel_mask_indices = np.array(np.where(sel_mask_indices & mask)).T
 
-            for s, (i, j, k) in enumerate(tqdm(sel_mask_indices, disable=cluster_mode)):
-                comb_patch = np.concatenate([
-                    subject_data_hr[i - patch_size // 2:i + round(patch_size / 2),
-                                    j - patch_size // 2:j + round(patch_size / 2),
-                                    k - patch_size // 2:k + round(patch_size / 2), :],
-                    subject_data_lr[i - patch_size // 2:i + round(patch_size / 2),
-                                    j - patch_size // 2:j + round(patch_size / 2),
-                                    k - patch_size // 2:k + round(patch_size / 2), :],
-                    subject_data_t1[i - patch_size // 2:i + round(patch_size / 2),
-                                    j - patch_size // 2:j + round(patch_size / 2),
-                                    k - patch_size // 2:k + round(patch_size / 2), :],
-                ], axis=-1)
+                for s, (i, j, k) in enumerate(tqdm(sel_mask_indices, disable=cluster_mode)):
+                    comb_patch = np.concatenate([
+                        subject_data_hr[i - patch_size // 2:i + round(patch_size / 2),
+                                        j - patch_size // 2:j + round(patch_size / 2),
+                                        k - patch_size // 2:k + round(patch_size / 2), :],
+                        subject_data_lr[i - patch_size // 2:i + round(patch_size / 2),
+                                        j - patch_size // 2:j + round(patch_size / 2),
+                                        k - patch_size // 2:k + round(patch_size / 2), :],
+                        subject_data_t1[i - patch_size // 2:i + round(patch_size / 2),
+                                        j - patch_size // 2:j + round(patch_size / 2),
+                                        k - patch_size // 2:k + round(patch_size / 2), :],
+                    ], axis=-1)
 
-                if 0 in comb_patch.shape:
-                    raise ValueError(f"Array dimension contains zeroes, at index {(i, j, k)}")
+                    if 0 in comb_patch.shape:
+                        raise ValueError(f"Array dimension contains zeroes, at index {(i, j, k)}")
 
-                with open(os.path.join(pairs_dir, subject_label, f'{s}.npy'), 'wb') as f:
-                    np.save(f, comb_patch, allow_pickle=False)
+                    with open(os.path.join(pairs_dir, subject_label, f'{s}_ds{ds}.npy'), 'wb') as f:
+                        np.save(f, comb_patch, allow_pickle=False)
 
         if cluster_mode:
             print(f"Total time for patch generation: {time.time() - cur_time} seconds.")
@@ -394,7 +396,7 @@ class PairSequence(keras.utils.Sequence):
 
     def sample_slice(self, subj, *_):
 
-        patch_indx = '100.npy'
+        patch_indx = '100_ds0.npy'
 
         patch = np.load(os.path.join(self.pair_dir, self.subject_labels[subj], patch_indx))
 

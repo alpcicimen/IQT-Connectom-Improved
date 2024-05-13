@@ -227,21 +227,28 @@ def unet3d_t1_v2(ipatch_size,
 
     conv_input = Sequential([Conv3D(kernel_size=5, filters=6 * 6, padding='same'),
                              LeakyReLU(),
+                             BatchNormalization(),
                              Conv3D(kernel_size=5, filters=6 * 6, padding='same')])(i_layer)
 
     t1_input = Sequential([Conv3D(kernel_size=5,
                                   strides=(2 if tw_patch_size is None else 1),  # Do not apply stride on custom T1 sizes
                                   filters=6 * 6, padding='same'),
                            LeakyReLU(),
+                           BatchNormalization(),
                            Conv3D(kernel_size=5, filters=6 * 6, padding='same')])(t1_layer)
 
-    t1_d_layer1 = unet_downsample_layer_v2(LeakyReLU()(t1_input), kernel_size=5, filter_size=6 * 6 * 6)
-    t1_d_layer2 = unet_downsample_layer_v2(LeakyReLU()(t1_d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
+    t1_d_layer1 = unet_downsample_layer_v2(BatchNormalization()(LeakyReLU()(t1_input)),
+                                           kernel_size=5, filter_size=6 * 6 * 6)
+    t1_d_layer2 = unet_downsample_layer_v2(BatchNormalization()(LeakyReLU()(t1_d_layer1)),
+                                           kernel_size=5, filter_size=6 * 6 * 6 * 6)
 
-    d_layer1 = unet_downsample_layer_v2(LeakyReLU()(conv_input), kernel_size=5, filter_size=6 * 6 * 6)
-    d_layer2 = unet_downsample_layer_v2(LeakyReLU()(d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
+    d_layer1 = unet_downsample_layer_v2(BatchNormalization()(LeakyReLU()(conv_input)),
+                                        kernel_size=5, filter_size=6 * 6 * 6)
+    d_layer2 = unet_downsample_layer_v2(BatchNormalization()(LeakyReLU()(d_layer1)),
+                                        kernel_size=5, filter_size=6 * 6 * 6 * 6)
 
-    d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(LeakyReLU()(t1_d_layer2 + d_layer2))
+    d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(
+        BatchNormalization()(LeakyReLU()(t1_d_layer2 + d_layer2)))
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
                                       concat_layer=concatenate([d_layer1, t1_d_layer1], axis=4),
@@ -322,8 +329,8 @@ def unet3d_not1_v2(ipatch_size):
                              LeakyReLU(),
                              Conv3D(kernel_size=5, filters=6 * 6, padding='same')])(i_layer)
 
-    d_layer1 = unet_downsample_layer_v2(LeakyReLU()(conv_input), kernel_size=5, filter_size=6 * 6 * 6)
-    d_layer2 = unet_downsample_layer_v2(LeakyReLU()(d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
+    d_layer1 = unet_downsample_layer_v2(BatchNormalization()(LeakyReLU()(conv_input)), kernel_size=5, filter_size=6 * 6 * 6)
+    d_layer2 = unet_downsample_layer_v2(BatchNormalization()(LeakyReLU()(d_layer1)), kernel_size=5, filter_size=6 * 6 * 6 * 6)
 
     d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(LeakyReLU()(d_layer2))
 
@@ -334,7 +341,7 @@ def unet3d_not1_v2(ipatch_size):
                                       concat_layer=conv_input,
                                       filter_size=6 * 6, kernel_size=5)
 
-    o_layer = LeakyReLU()(u_layer2)
+    o_layer = BatchNormalization()(LeakyReLU()(u_layer2))
 
     o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(o_layer)
 
