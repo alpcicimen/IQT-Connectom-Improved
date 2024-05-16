@@ -94,7 +94,7 @@ class PairSequence(keras.utils.Sequence):
             raise ValueError("Only values larger than 1 are supported.")
 
         for downsampling_rate in downsampling_rates:
-            assert downsampling_rate > 1.  # Up-sampling is not supported!
+            assert downsampling_rate >= 1.  # Up-sampling is not supported!
 
         for subject_label in subject_labels:
 

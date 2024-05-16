@@ -155,7 +155,7 @@ def unet_upsample_layer_v2(prev_layer,
     layer = Sequential([LeakyReLU(),
                         BatchNormalization(),
                         Conv3DTranspose(filters=filter_size,
-                                        kernel_size=kernel_size*2,
+                                        kernel_size=kernel_size,
                                         strides=2,
                                         padding="same")])
 
@@ -175,4 +175,113 @@ def unet_upsample_layer_v2(prev_layer,
                      padding="same"))
 
     return Sequential(layer)(conv)
+
+
+def unet_downsample_layer_v3(prev_layer,
+                             filter_size,
+                             kernel_size=3,
+                             rep_layers=2,
+                             residual=False,
+                             final_activation=True):
+
+    dsamp = Conv3D(filters=filter_size,
+                   kernel_size=kernel_size,
+                   padding="same",
+                   strides=2)(prev_layer)
+
+    conv = []
+
+    for n in range(rep_layers):
+        conv.append(BatchNormalization())
+        conv.append(ELU())
+        conv.append(Conv3D(filters=filter_size,
+                           kernel_size=3,
+                           padding="same"))
+
+    if residual:
+        pre_act = Sequential(conv)(dsamp) + dsamp
+    else:
+        pre_act = Sequential(conv)(dsamp)
+
+    if final_activation:
+        return ELU()(BatchNormalization()(pre_act))
+    else:
+        return pre_act
+
+
+class VolumeAttentionLayer3D(Layer):
+
+    def __init__(self, dims):
+        super().__init__()
+
+        self.dims = dims[:-1]
+        self.channels = dims[-1]
+
+        self.__dense = [Dense(self.channels), Dense(self.channels), Dense(self.channels)]
+        self.__attention = Attention()
+
+    def call(self, inputs, *args, **kwargs):
+
+        queries = inputs[0]
+        values = inputs[1] if len(inputs) > 1 else queries
+        keys = inputs[2] if len(inputs) > 2 else values
+
+        values = Reshape((self.dims[1] * self.dims[2] * self.dims[3], self.channels))(values)
+        keys = Reshape((self.dims[1] * self.dims[2] * self.dims[3], self.channels))(keys)
+        queries = Reshape((self.dims[1] * self.dims[2] * self.dims[3], self.channels))(queries)
+
+        result = self.__attention([queries, values, keys])
+
+        result = Reshape((self.dims[1], self.dims[2], self.dims[3], self.channels))(result)
+
+        return result
+
+
+def unet_attention_fusion(prev_layer,
+                          filter_size,
+                          kernel_size=3,
+                          attention_layer=None,
+                          concat_layer=None,
+                          rep_layers=2,
+                          residual=False):
+
+    layer = Sequential([BatchNormalization(),
+                        ELU(),
+                        Conv3DTranspose(filters=filter_size,
+                                        kernel_size=kernel_size,
+                                        strides=2,
+                                        padding="same")])
+
+    if concat_layer is not None or attention_layer is not None:
+        layer.add(BatchNormalization())
+        layer.add(ELU())
+
+    conv = layer(prev_layer)
+
+    if attention_layer is not None:
+        conv = VolumeAttentionLayer3D(attention_layer.shape)([conv, attention_layer])
+        conv = ELU()(LayerNormalization()(conv))
+
+    if concat_layer is not None:
+        conv = Concatenate(axis=4)([conv, concat_layer])
+
+        conv = Conv3D(filters=filter_size,
+                      kernel_size=1,
+                      padding='same')(conv)
+
+    pre_res = conv
+
+    layer = []
+
+    for _ in range(rep_layers):
+        layer.append(BatchNormalization())
+        layer.append(ELU())
+        layer.append(Conv3D(filters=filter_size,
+                            kernel_size=3,
+                            padding="same"))
+
+    if residual:
+        return Sequential(layer)(pre_res) + pre_res
+    else:
+        return Sequential(layer)(pre_res)
 
