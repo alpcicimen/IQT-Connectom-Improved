@@ -178,8 +178,8 @@ def main(model_type,
     (sample_t, sample_i, sample_t1) = train_seq.sample_slice(0, (60, 60, 60))
 
     with (summary_writer.as_default()):
-        tf.summary.image('Target Slice', sample_t[:, :, 7, :, 0:1], step=0)
-        tf.summary.image('Input T1w Slice', sample_t1[:, :, 7, :, :], step=0)
+        tf.summary.image('Target Slice', sample_t[:, :, patch_size[0]//2, :, 0:1], step=0)
+        tf.summary.image('Input T1w Slice', sample_t1[:, :, patch_size[0]//2, :, :], step=0)
 
     for run in range(epochs):
 
@@ -213,7 +213,7 @@ def main(model_type,
             tf.summary.scalar('Validation Epoch Mean Loss', val_loss / len(validation_seq), step=run)
 
             tf.summary.image('Model Output Slice',
-                             model([sample_i, sample_t1], training=False)[:, :, 7, :, 0:1],
+                             model([sample_i, sample_t1], training=False)[:, :, patch_size[0]//2, :, 0:1],
                              step=run)
 
         train_seq.on_epoch_end()  # There's no need to shuffle for validation so shuffle only training
@@ -306,13 +306,13 @@ if __name__ == '__main__':
     parser.add_argument('--patch_size', type=int, nargs='+', default=[16])
     #  Unfortunately bash does not natively support floating point operations, so a possible workaround would be to
     #  calculate the proper floating point before supplying it as a command-line argument.
-    parser.add_argument('--downsampling_rates', type=float, nargs='+', default=[1.25, 1.5, 1.78, 2.0, 2.5])
+    parser.add_argument('--downsampling_rates', type=float, nargs='+', default=[1, 1.5, 1.78, 2.0])
     parser.add_argument('--hr_downsampling_rate', type=float, default=1.)
 
     parser.add_argument('--clip_strategy', type=str, default='constant')
     parser.add_argument('--clip_value', type=float, default=1.8e-3)
 
-    parser.add_argument('--batch_size', type=int, default=6)
+    parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--mask_erosion', type=int, default=5)
 
 ########################################################################################################################
