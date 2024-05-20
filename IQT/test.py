@@ -130,16 +130,19 @@ def main(model_type,
                                                clip_strategy='percentile',
                                                value=99)
 
-        norm_metrics_target = util.get_clip_values(target_data, mask,
-                                                   'dti',
-                                                   clip_strategy=clip_strategy,
-                                                   value=clip_value)
-
         norm_metrics_input = util.apply_normalization_combined(test_data, mask,
                                                                method='minmax',
                                                                channels=np.array([[0, 3, 5], [1, 2, 4]]),
-                                                               values=norm_metrics_target)
+                                                               values=util.get_clip_values(test_data, mask,
+                                                                                           'dti',
+                                                                                           clip_strategy=clip_strategy,
+                                                                                           value=clip_value))
         util.apply_normalization_combined(t1_rescaled, mask, method='minmax', values=norm_metrics_t1)
+
+        target_data[..., np.array([0, 3, 5])] = np.clip(target_data[..., np.array([0, 3, 5])],
+                                                        a_min=0, a_max=1.8e-3)
+        target_data[..., np.array([1, 2, 4])] = np.clip(target_data[..., np.array([1, 2, 4])],
+                                                        a_min=-1.8e-3, a_max=1.8e-3)
 
 ########################################################################################################################
 
