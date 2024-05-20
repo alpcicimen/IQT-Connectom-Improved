@@ -125,21 +125,28 @@ def unet_upsample_layer(prev_layer,
 def unet_downsample_layer_v2(prev_layer,
                              filter_size,
                              kernel_size=3,
-                             rep_layers=2):
+                             rep_layers=2,
+                             last_layer=False):
 
     conv = Sequential([
         Conv3D(filters=filter_size,
                kernel_size=kernel_size,
-               padding="same",
-               strides=2),
+               padding="same"),
+        LeakyReLU(),
+        BatchNormalization(),
+        MaxPooling3D((2, 2, 2)),
+        Conv3D(filters=filter_size,
+               kernel_size=kernel_size,
+               padding="same"),
+        LeakyReLU()
     ])
 
     for n in range(rep_layers):
-        conv.add(LeakyReLU())
-        conv.add(BatchNormalization())
         conv.add(Conv3D(filters=filter_size,
                         kernel_size=3,
                         padding="same"))
+        if not (last_layer & (n == (rep_layers - 1))):
+            conv.add(LeakyReLU())
 
     pre_act = conv(prev_layer)
 
@@ -152,14 +159,7 @@ def unet_upsample_layer_v2(prev_layer,
                            kernel_size=3,
                            rep_layers=2):
 
-    layer = Sequential([LeakyReLU(),
-                        BatchNormalization(),
-                        Conv3DTranspose(filters=filter_size,
-                                        kernel_size=kernel_size,
-                                        strides=2,
-                                        padding="same")])
-
-    conv = layer(prev_layer)
+    conv = UpSampling3D(size=(2, 2, 2))(prev_layer)
 
     if concat_layer is not None:
         conv = concatenate([conv, concat_layer], 4)
@@ -167,12 +167,12 @@ def unet_upsample_layer_v2(prev_layer,
     layer = []
 
     for _ in range(rep_layers):
-
-        layer.append(LeakyReLU())
-        layer.append(BatchNormalization())
         layer.append(Conv3D(filters=filter_size,
                      kernel_size=3,
                      padding="same"))
+        layer.append(LeakyReLU())
+
+    layer.append(BatchNormalization())
 
     return Sequential(layer)(conv)
 
