@@ -162,13 +162,13 @@ def unet_upsample_layer_v2(prev_layer,
     conv = UpSampling3D(size=(2, 2, 2))(prev_layer)
 
     if concat_layer is not None:
-        conv = concatenate([conv, concat_layer], 4)
+        conv = Concatenate(axis=4)([conv, concat_layer])
 
     layer = []
 
     for _ in range(rep_layers):
         layer.append(Conv3D(filters=filter_size,
-                     kernel_size=3,
+                     kernel_size=kernel_size,
                      padding="same"))
         layer.append(LeakyReLU())
 
