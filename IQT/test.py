@@ -18,7 +18,7 @@ def dt_rmse(input, target):
     return np.median(np.sqrt(np.mean(np.square(target - input), axis=0)))
 
 
-def get_grid_indices(subj_img, i_patch_size=5, o_patch_size=3, overlap=0) -> List[Tuple[int, int, int]]:
+def get_grid_indices(subj_img, mask, i_patch_size=5, o_patch_size=3, overlap=0) -> List[Tuple[int, int, int]]:
     (xsize, ysize, zsize, _) = subj_img.shape
 
     recon_indx = [(i, j, k)
@@ -30,7 +30,10 @@ def get_grid_indices(subj_img, i_patch_size=5, o_patch_size=3, overlap=0) -> Lis
                                      2 * o_patch_size - overlap * 2)
                   for i in np.arange(i_patch_size,
                                      xsize - i_patch_size,
-                                     2 * o_patch_size - overlap * 2)]
+                                     2 * o_patch_size - overlap) if np.sum(mask[
+                                                                           i-o_patch_size:i+o_patch_size,
+                                                                           j-o_patch_size:j+o_patch_size,
+                                                                           k-o_patch_size:k+o_patch_size,] > 0)]
 
     return recon_indx
 
@@ -159,7 +162,7 @@ def main(model_type,
 
         input_tensors = np.copy(test_data)[...]
 
-        run_indices = get_grid_indices(input_tensors, 8, 8, overlap=patch_overlap)
+        run_indices = get_grid_indices(input_tensors, mask, 8, 8, overlap=patch_overlap)
 
         model_output = np.zeros(test_data.shape[:-1] + (6,))
 
