@@ -312,7 +312,7 @@ if __name__ == '__main__':
     parser.add_argument('--clip_strategy', type=str, default='constant')
     parser.add_argument('--clip_value', type=float, default=1.8e-3)
 
-    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--batch_size', type=int, default=40)
     parser.add_argument('--mask_erosion', type=int, default=5)
 
 ########################################################################################################################
