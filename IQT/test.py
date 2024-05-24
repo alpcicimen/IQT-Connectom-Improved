@@ -128,18 +128,21 @@ def main(model_type,
         norm_metrics_t1 = util.get_clip_values(t1_rescaled, mask,
                                                data_mode='t1w',
                                                clip_strategy='percentile',
-                                               value=99)
-
-        norm_metrics_target = util.get_clip_values(target_data, mask,
-                                                   'dti',
-                                                   clip_strategy=clip_strategy,
-                                                   value=clip_value)
+                                               value=96)
 
         norm_metrics_input = util.apply_normalization_combined(test_data, mask,
                                                                method='minmax',
                                                                channels=np.array([[0, 3, 5], [1, 2, 4]]),
-                                                               values=norm_metrics_target)
+                                                               values=util.get_clip_values(test_data, mask,
+                                                                                           'dti',
+                                                                                           clip_strategy=clip_strategy,
+                                                                                           value=clip_value))
         util.apply_normalization_combined(t1_rescaled, mask, method='minmax', values=norm_metrics_t1)
+
+        target_data[..., np.array([0, 3, 5])] = np.clip(target_data[..., np.array([0, 3, 5])],
+                                                        a_min=0, a_max=2e-3)
+        target_data[..., np.array([1, 2, 4])] = np.clip(target_data[..., np.array([1, 2, 4])],
+                                                        a_min=-2e-3, a_max=2e-3)
 
 ########################################################################################################################
 
@@ -173,10 +176,10 @@ def main(model_type,
             model_output[i - patch_size//2 + patch_overlap:i + patch_size//2 - patch_overlap,
                          j - patch_size//2 + patch_overlap:j + patch_size//2 - patch_overlap,
                          k - patch_size//2 + patch_overlap:k + patch_size//2 - patch_overlap, :] += \
-                model([i_patch, t1_patch]).numpy()[0,
-                                                   patch_overlap:patch_size - patch_overlap,
-                                                   patch_overlap:patch_size - patch_overlap,
-                                                   patch_overlap:patch_size - patch_overlap]
+                model([i_patch, t1_patch], training=False).numpy()[0,
+                                                                   patch_overlap:patch_size - patch_overlap,
+                                                                   patch_overlap:patch_size - patch_overlap,
+                                                                   patch_overlap:patch_size - patch_overlap]
 
         util.revert_normalization_combined(model_output, mask, norm_metrics_input,
                                            method='minmax', channels=np.array([[0, 3, 5], [1, 2, 4]]))
@@ -192,11 +195,33 @@ def main(model_type,
 
         model_md_rmse = np.sqrt(np.mean(np.square(md_orig - md_gen)[mask]))
         model_fa_rmse = np.sqrt(np.mean(np.square(fa_orig - fa_gen)[mask]))
-        model_cfa_rmse = np.sqrt(np.mean(np.square(cfa_orig - cfa_gen)[mask]))
+
+        # Cosine similarity calculation. The CFA is a directional vector with normalized values.
+        # This means that the angular difference is a maximum of 90 degrees, for which the cosine range is between [0,1]
+        denom = np.multiply(np.linalg.norm(cfa_gen, axis=-1), np.linalg.norm(cfa_orig, axis=-1))
+        model_cosine_sim = np.sum(np.multiply(cfa_gen, cfa_orig), axis=-1) / denom
+
+        # Penalise the cosine difference at max for NaN values.
+        # Most likely reason for NaN is the nonmasked areas, which aren't included in the mean,
+        # but in case NaN persists to masked we treat as maximum difference
+        model_cosine_sim[np.isnan(model_cosine_sim)] = 0
+
+        model_cosine_sim = np.mean(model_cosine_sim[mask])
 
         linear_md_rmse = np.sqrt(np.mean(np.square(md_orig - md_in)[mask]))
         linear_fa_rmse = np.sqrt(np.mean(np.square(fa_orig - fa_in)[mask]))
-        linear_cfa_rmse = np.sqrt(np.mean(np.square(cfa_orig - cfa_in)[mask]))
+
+        # Cosine similarity calculation. The CFA is a directional vector with normalized values.
+        # This means that the angular difference is a maximum of 90 degrees, for which the cosine range is between [0,1]
+        denom = np.multiply(np.linalg.norm(cfa_in, axis=-1), np.linalg.norm(cfa_orig, axis=-1))
+        linear_cosine_sim = np.sum(np.multiply(cfa_in, cfa_orig), axis=-1) / denom
+
+        # Penalise the cosine difference at max for NaN values.
+        # Most likely reason for NaN is the nonmasked areas, which aren't included in the mean,
+        # but in case NaN persists to masked we treat as maximum difference
+        linear_cosine_sim[np.isnan(linear_cosine_sim)] = 0
+
+        linear_cosine_sim = np.mean(linear_cosine_sim[mask])
 
         model_md_ssim = ssim(md_gen, md_orig, data_range=np.max(md_orig) - np.min(md_orig))
         linear_md_ssim = ssim(md_in, md_orig, data_range=np.max(md_orig) - np.min(md_orig))
@@ -208,13 +233,13 @@ def main(model_type,
                    'DT-RMSE_Linear': linear_dt_rmse,
                    'RMSE_MD_Linear': linear_md_rmse,
                    'RMSE_FA_Linear': linear_fa_rmse,
-                   'RMSE_CFA_Linear': linear_cfa_rmse,
+                   'CosSim_CFA_Linear': linear_cosine_sim,
                    'SSIM_MD_Linear': linear_md_ssim,
                    'SSIM_FA_Linear': linear_fa_ssim,
                    'DT-RMSE_Model': model_dt_rmse,
                    'RMSE_MD_Model': model_md_rmse,
                    'RMSE_FA_Model': model_fa_rmse,
-                   'RMSE_CFA_Model': model_cfa_rmse,
+                   'CosSim_CFA_Model': model_cosine_sim,
                    'SSIM_MD_Model': model_md_ssim,
                    'SSIM_FA_Model': model_fa_ssim})
 
