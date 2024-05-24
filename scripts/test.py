@@ -30,10 +30,10 @@ def get_grid_indices(subj_img, mask, i_patch_size=5, o_patch_size=3, overlap=0) 
                                      2 * o_patch_size - overlap * 2)
                   for i in np.arange(i_patch_size,
                                      xsize - i_patch_size,
-                                     2 * o_patch_size - overlap) if np.sum(mask[
-                                                                           i-o_patch_size:i+o_patch_size,
-                                                                           j-o_patch_size:j+o_patch_size,
-                                                                           k-o_patch_size:k+o_patch_size,] > 0)]
+                                     2 * o_patch_size - overlap * 2)
+                  if np.sum(mask[i-o_patch_size:i+o_patch_size,
+                                 j-o_patch_size:j+o_patch_size,
+                                 k-o_patch_size:k+o_patch_size,] > 0)]
 
     return recon_indx
 
@@ -140,6 +140,7 @@ def main(model_type,
                                                                                            'dti',
                                                                                            clip_strategy=clip_strategy,
                                                                                            value=clip_value))
+
         util.apply_normalization_combined(t1_rescaled, mask, method='minmax', values=norm_metrics_t1)
 
         target_data[..., np.array([0, 3, 5])] = np.clip(target_data[..., np.array([0, 3, 5])],
