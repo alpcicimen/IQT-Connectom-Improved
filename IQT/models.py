@@ -215,41 +215,36 @@ def unet3d_pre_fusion_v2(ipatch_size, t1_patch_size):
                                t1_patch_size,
                                t1_patch_size, 1], name='input_t1', dtype=tf.float32)
 
-    conv_input = Sequential([Conv3D(kernel_size=5, filters=6 * 4, padding='same'),
+    conv_input = Sequential([Conv3D(kernel_size=3, filters=7 * 4, padding='same'),
                              LeakyReLU(),
-                             Conv3D(kernel_size=5, filters=6 * 4, padding='same')])(i_layer)
+                             Conv3D(kernel_size=3, filters=7 * 4, padding='same'),
+                             LeakyReLU()])(Concatenate(axis=4)([i_layer, t1_layer]))
 
-    t1_input = Sequential([Conv3D(kernel_size=5, filters=1 * 4, padding='same'),
-                           LeakyReLU(),
-                           Conv3D(kernel_size=5, filters=1 * 4, padding='same')])(t1_layer)
-
-    model_input = Concatenate(axis=4)([conv_input, t1_input])
-
-    d_layer1 = unet_downsample_layer_v2(LeakyReLU()(model_input), kernel_size=5, filter_size=7 * 4 * 4)
-    d_layer2 = unet_downsample_layer_v2(LeakyReLU()(d_layer1), kernel_size=5, filter_size=7 * 4 * 4 * 4)
-
-    d_layer_n = Conv3D(kernel_size=3, filters=6 * 4 * 4 * 4, padding='same')(LeakyReLU()(d_layer2))
+    d_layer1 = unet_downsample_layer_v2(conv_input,
+                                        kernel_size=3, filter_size=7 * 4 * 4)
+    d_layer2 = unet_downsample_layer_v2(d_layer1,
+                                        kernel_size=3, filter_size=7 * 4 * 4 * 4,
+                                        last_layer=True)
 
     d_layer_n = Sequential([LeakyReLU(),
-                            Conv3D(kernel_size=3, filters=6 * 4 * 4 * 4, padding='same'),
+                            Conv3D(kernel_size=3, filters=7 * 4 * 4 * 4, padding='same'),
                             LeakyReLU(),
-                            Conv3D(kernel_size=3, filters=6 * 4 * 4 * 4, padding='same')
-                            ])(d_layer_n)
+                            BatchNormalization()])(d_layer2)
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
                                       concat_layer=d_layer1,
-                                      filter_size=6 * 4 * 4, kernel_size=5)
+                                      filter_size=7 * 4 * 4, kernel_size=3)
     u_layer2 = unet_upsample_layer_v2(u_layer1,
-                                      concat_layer=model_input,
-                                      filter_size=6 * 4, kernel_size=5)
+                                      concat_layer=conv_input,
+                                      filter_size=7 * 4, kernel_size=3)
 
-    o_layer = LeakyReLU()(u_layer2)
+    o_layer = Conv3D(kernel_size=3, filters=6 * 4, padding='same')(u_layer2)
+    o_layer = LeakyReLU()(o_layer)
 
-    o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(o_layer)
+    o_layer = Conv3D(kernel_size=1, filters=6, padding='same', activation=sigmoid,
+                     dtype=tf.float32)(o_layer)
 
-    o_layer = tanh(o_layer) + i_layer
-
-    return keras.Model([i_layer, t1_layer], o_layer, name='UNet-NoT1')
+    return keras.Model([i_layer, t1_layer], o_layer, name='UNet-PreFusion')
 
 
 def unet3d_not1_v2(ipatch_size):
