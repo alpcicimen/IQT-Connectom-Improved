@@ -181,35 +181,41 @@ def unet_downsample_layer_v3(prev_layer,
                              filter_size,
                              kernel_size=3,
                              rep_layers=2,
-                             residual=False,
+                             residual=True,
                              final_activation=True):
+    dsamp = Sequential([
+        Conv3D(filters=filter_size,
+               kernel_size=kernel_size,
+               padding="same"),
+        ELU(),
+        BatchNormalization(),
+        MaxPooling3D((2, 2, 2)),
+        Conv3D(filters=filter_size,
+               kernel_size=kernel_size,
+               padding="same")
+    ])(prev_layer)
 
-    dsamp = Conv3D(filters=filter_size,
-                   kernel_size=kernel_size,
-                   padding="same",
-                   strides=2)(prev_layer)
-
-    conv = []
+    conv = [ELU()]
 
     for n in range(rep_layers):
-        conv.append(BatchNormalization())
-        conv.append(ELU())
         conv.append(Conv3D(filters=filter_size,
                            kernel_size=3,
                            padding="same"))
+        if n < (rep_layers - 1):
+            conv.append(ELU())
 
     if residual:
-        pre_act = Sequential(conv)(dsamp) + dsamp
+        pre_act = Add()([Sequential(conv)(dsamp), dsamp])
     else:
         pre_act = Sequential(conv)(dsamp)
 
     if final_activation:
-        return ELU()(BatchNormalization()(pre_act))
+        return ELU()(pre_act)
     else:
         return pre_act
 
 
-class VolumeAttentionLayer3D(Layer):
+class VolumeAttentionLayer(Layer):
 
     def __init__(self, dims):
         super().__init__()
@@ -217,7 +223,9 @@ class VolumeAttentionLayer3D(Layer):
         self.dims = dims[:-1]
         self.channels = dims[-1]
 
-        self.__dense = [Dense(self.channels), Dense(self.channels), Dense(self.channels)]
+        self.__dense = [Dense(self.channels, use_bias=False),
+                        Dense(self.channels, use_bias=False),
+                        Dense(self.channels, use_bias=False)]
         self.__attention = Attention()
 
     def call(self, inputs, *args, **kwargs):
@@ -237,51 +245,69 @@ class VolumeAttentionLayer3D(Layer):
         return result
 
 
+class BasicTransformerBlock(Layer):
+
+    def __init__(self, dims):
+        super().__init__()
+        self.attn1 = VolumeAttentionLayer(dims)
+        self.linear = Sequential([Conv3D(dims[-1], kernel_size=1),
+                                  ELU(),
+                                  Conv3D(dims[-1], kernel_size=1)])
+        self.attn2 = VolumeAttentionLayer(dims)
+        self.norm1 = BatchNormalization()
+        self.norm2 = BatchNormalization()
+        self.norm3 = BatchNormalization()
+
+    def call(self, inputs, *args, **kwargs):
+        x = inputs[0]
+        context = inputs[1]
+
+        x = self.attn1([self.norm1(x)]) + x
+        x = self.attn2([self.norm2(x), context]) + x
+        x = self.linear(self.norm3(x)) + x
+        return x
+
+
 def unet_attention_fusion(prev_layer,
                           filter_size,
-                          kernel_size=3,
                           attention_layer=None,
                           concat_layer=None,
                           rep_layers=2,
-                          residual=False):
+                          residual=True):
 
-    layer = Sequential([BatchNormalization(),
-                        ELU(),
-                        Conv3DTranspose(filters=filter_size,
-                                        kernel_size=kernel_size,
-                                        strides=2,
-                                        padding="same")])
+    conv = UpSampling3D(size=(2, 2, 2))(prev_layer)
 
-    if concat_layer is not None or attention_layer is not None:
-        layer.add(BatchNormalization())
-        layer.add(ELU())
+    if attention_layer is None and concat_layer is None:
+        prev_layer = Conv3D(filters=filter_size, kernel_size=1, padding='same')(conv)
 
-    conv = layer(prev_layer)
+        conv = ELU()(prev_layer)
 
     if attention_layer is not None:
-        conv = VolumeAttentionLayer3D(attention_layer.shape)([conv, attention_layer])
-        conv = ELU()(LayerNormalization()(conv))
+        prev_layer = BasicTransformerBlock(attention_layer.shape)(
+            [ELU()(Conv3D(filters=filter_size, kernel_size=3, padding='same')(conv)),
+             attention_layer]
+        )
+
+        conv = ELU()(prev_layer)
 
     if concat_layer is not None:
-        conv = Concatenate(axis=4)([conv, concat_layer])
+        prev_layer = Conv3D(filters=filter_size, kernel_size=1, padding='same')(
+            Concatenate(axis=4)([conv, concat_layer])
+        )
 
-        conv = Conv3D(filters=filter_size,
-                      kernel_size=1,
-                      padding='same')(conv)
-
-    pre_res = conv
+        conv = ELU()(prev_layer)
 
     layer = []
 
-    for _ in range(rep_layers):
-        layer.append(BatchNormalization())
-        layer.append(ELU())
+    for n in range(rep_layers):
         layer.append(Conv3D(filters=filter_size,
                             kernel_size=3,
                             padding="same"))
+        if n < (rep_layers - 1):
+            layer.append(ELU())
 
     if residual:
-        return Sequential(layer)(pre_res) + pre_res
+        return BatchNormalization()(ELU()(Add()([Sequential(layer)(conv), prev_layer])))
     else:
-        return Sequential(layer)(pre_res)
+        return BatchNormalization()(ELU()(Sequential(layer)(conv)))
 

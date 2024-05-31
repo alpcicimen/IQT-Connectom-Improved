@@ -143,64 +143,58 @@ def unet3d_t1_attention(ipatch_size,
                                __tw_patch_size,
                                __tw_patch_size, 1], name='input_t1', dtype=tf.float32)
 
-    conv_input = Sequential([Conv3D(kernel_size=1, filters=6 * 4, padding='same'),
-                             BatchNormalization(),
+    conv_input = Sequential([Conv3D(kernel_size=3, filters=6 * 4, padding='same'),
                              ELU(),
-                             Conv3D(kernel_size=5, filters=6 * 4, padding='same'),
-                             BatchNormalization(),
+                             Conv3D(kernel_size=3, filters=6 * 4, padding='same'),
                              ELU(),])(i_layer)
 
-    t1_input = Sequential([Conv3D(kernel_size=1, filters=6 * 4, padding='same'),
-                           BatchNormalization(),
+    t1_input = Sequential([Conv3D(kernel_size=3, filters=6 * 4, padding='same'),
                            ELU(),
-                           Conv3D(kernel_size=5, filters=6 * 4, padding='same'),
-                           BatchNormalization(),
+                           Conv3D(kernel_size=3, filters=6 * 4, padding='same'),
                            ELU(),])(t1_layer)
 
     t1_d_layer1 = unet_downsample_layer_v3(t1_input,
-                                           kernel_size=5, filter_size=6 * 4 ** 2)
+                                           kernel_size=3, filter_size=6 * 4 ** 2)
     t1_d_layer2 = unet_downsample_layer_v3(t1_d_layer1,
-                                           kernel_size=5, filter_size=6 * 4 ** 3)
+                                           kernel_size=3, filter_size=6 * 4 ** 3)
     t1_d_layer3 = unet_downsample_layer_v3(t1_d_layer2,
-                                           kernel_size=5, filter_size=6 * 4 ** 4,
-                                           final_activation=False)
+                                           kernel_size=3, filter_size=6 * 4 ** 4)
 
     d_layer1 = unet_downsample_layer_v3(conv_input,
-                                        kernel_size=5, filter_size=6 * 4 ** 2)
+                                        kernel_size=3, filter_size=6 * 4 ** 2)
     d_layer2 = unet_downsample_layer_v3(d_layer1,
-                                        kernel_size=5, filter_size=6 * 4 ** 3)
+                                        kernel_size=3, filter_size=6 * 4 ** 3)
     d_layer3 = unet_downsample_layer_v3(d_layer2,
-                                        kernel_size=5, filter_size=6 * 4 ** 4,
-                                        final_activation=False)
+                                        kernel_size=3, filter_size=6 * 4 ** 4)
 
-    d_layer_n = Sequential(
-        [BatchNormalization(),
-         ELU(),
-         Conv3D(kernel_size=3, filters=6 * 4 ** 4, padding='same')]
-    )(Average()([t1_d_layer3, d_layer3]))
+    # d_layer_n = Sequential(
+    #     [BatchNormalization(),
+    #      ELU(),
+    #      Conv3D(kernel_size=3, filters=6 * 2 ** 4, padding='same')]
+    # )(Average()([t1_d_layer3, d_layer3]))
+
+    d_layer_n = BasicTransformerBlock(d_layer3.shape)([d_layer3, t1_d_layer3])
+    d_layer_n = BatchNormalization()(ELU()(d_layer_n))
 
     u_layer1 = unet_attention_fusion(d_layer_n,
-                                     # concat_layer=Concatenate()([d_layer2, t1_d_layer2]),
                                      concat_layer=d_layer2,
                                      attention_layer=t1_d_layer2,
-                                     filter_size=6 * 4 ** 3, kernel_size=5)
+                                     filter_size=6 * 4 ** 3)
 
     u_layer2 = unet_attention_fusion(u_layer1,
-                                     # concat_layer=Concatenate()([d_layer1, t1_d_layer1]),
                                      concat_layer=d_layer1,
                                      attention_layer=t1_d_layer1,
-                                     filter_size=6 * 4 ** 2, kernel_size=5)
+                                     filter_size=6 * 4 ** 2)
     u_layer3 = unet_attention_fusion(u_layer2,
-                                     # concat_layer=Concatenate()([conv_input, t1_input]),
                                      concat_layer=conv_input,
                                      attention_layer=t1_input,
-                                     filter_size=6 * 4 ** 1, kernel_size=5)
+                                     filter_size=6 * 4 ** 1)
 
-    o_layer = ELU()(u_layer3)
-
-    o_layer = Conv3D(kernel_size=1, filters=6, padding='same', dtype=tf.float32)(o_layer)
-
-    o_layer = tanh(o_layer) + i_layer
+    o_layer = Sequential([Conv3D(kernel_size=3, filters=6 * 4, padding='same'),
+                          ELU(),
+                          Conv3D(kernel_size=1, filters=6, padding='same',
+                                 dtype=tf.float32,
+                                 activation=sigmoid)])(u_layer3)
 
     return keras.Model([i_layer, t1_layer], o_layer, name='UNet-T1')
 
