@@ -238,7 +238,9 @@ class VolumeAttentionLayer(Layer):
         keys = Reshape((self.dims[1] * self.dims[2] * self.dims[3], self.channels))(keys)
         queries = Reshape((self.dims[1] * self.dims[2] * self.dims[3], self.channels))(queries)
 
-        result = self.__attention([queries, values, keys])
+        result = self.__attention([self.__dense[0](queries),
+                                   self.__dense[1](values),
+                                   self.__dense[2](keys)])
 
         result = Reshape((self.dims[1], self.dims[2], self.dims[3], self.channels))(result)
 
