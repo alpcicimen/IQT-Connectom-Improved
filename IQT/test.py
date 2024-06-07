@@ -15,7 +15,7 @@ import util
 
 
 def dt_rmse(input, target):
-    return np.median(np.sqrt(np.mean(np.square(target - input), axis=0)))
+    return np.median(np.sqrt(np.mean(np.square(target - input), axis=-1)))
 
 
 def get_grid_indices(subj_img, i_patch_size=5, o_patch_size=3, overlap=0) -> List[Tuple[int, int, int]]:
