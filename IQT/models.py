@@ -5,7 +5,7 @@ import keras.layers as KL
 import os
 from keras.activations import tanh
 
-from layers import *
+from .layers import *
 
 
 def config_model(model_type,

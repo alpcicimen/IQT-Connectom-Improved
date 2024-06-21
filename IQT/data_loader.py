@@ -12,7 +12,7 @@ from collections.abc import Iterable
 
 from tqdm import tqdm
 
-import util
+from IQT import util
 
 from scipy.ndimage import zoom, binary_erosion
 

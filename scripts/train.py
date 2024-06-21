@@ -6,8 +6,8 @@ import keras.optimizers.schedules
 from tensorflow import keras
 from tensorflow.keras.optimizers.schedules import ExponentialDecay, PiecewiseConstantDecay, LearningRateSchedule
 
-from data_loader import *
-from models import *
+from IQT.data_loader import *
+from IQT.models import *
 
 global model
 global optim

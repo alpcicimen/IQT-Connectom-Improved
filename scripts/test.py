@@ -10,8 +10,8 @@ from scipy.ndimage import binary_erosion, zoom
 from skimage.metrics import structural_similarity as ssim
 from tqdm import tqdm
 
-from models import config_model
-import util
+from IQT.models import config_model
+from IQT import util
 
 
 def dt_rmse(input, target):
