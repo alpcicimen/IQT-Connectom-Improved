@@ -4,10 +4,12 @@ import tensorflow as tf
 import keras
 import os
 import time
+import copy
 
 from math import ceil
 from random import randint, choices
-from typing import List, Tuple
+from typing import List, Tuple, Literal, Any
+from numpy.typing import NDArray
 from collections.abc import Iterable
 
 from tqdm import tqdm
@@ -29,7 +31,7 @@ class PairSequence(keras.utils.Sequence):
                       hr_filedir=os.path.join('HR', 'dt_b1000_'),
                       t1_filedir=os.path.join('T1w', 'T1w_acpc_dc_restore_brain'),
                       mode='dti',
-                      normalization_method='minmax',
+                      normalization_method: Literal["minmax", "std"] = 'minmax',
                       clip_strategy='constant',
                       clip_value=3e-3,
                       patch_spacing=12,
@@ -423,23 +425,152 @@ class DataLoader:
                  data_dir: str | os.PathLike[str],
                  subject_labels: Iterable[str],
                  subdir='.',
-                 mode='dti',
-                 file_head='dt_b1000_',
-                 normalization_method: str | None = 'minmax'):
+                 mode: Literal["dti", "T1w"] = 'dti',
+                 file_head='dt_b1000_'):
         self.data_dir = data_dir
         self.subdir = subdir
         self.subject_labels = subject_labels
         self.mode = mode
         self.file_head = file_head
 
-        self.normalization_method = normalization_method
         self.normalization_metrics = []
 
-        self.__subjects = []
-        self.__subject_masks = []
-        self.__subject_S0_values = []
+        self.__subjects: List[NDArray[float]] = []
+        self.__subject_masks: List[NDArray[bool]] = []
+        self.__subject_S0_values: List[NDArray[float]] = []
 
         self.load_data()
+
+    def resample(self,
+                 sampling_rate: float | Tuple[float, float, float] = 1.25/0.7):
+
+        sr = sampling_rate \
+            if type(sampling_rate) is tuple \
+            else (sampling_rate, sampling_rate, sampling_rate)
+
+        for i in range(len(self.__subjects)):
+
+            subj = self.__subjects[i]
+
+            if np.mean(sampling_rate) > 1.:
+                subj = util.apply_gaussian_filter(subj, sampling_rate)
+
+            subj = zoom(subj,
+                        zoom=(1. / sr[0],
+                              1. / sr[1],
+                              1. / sr[2], 1),
+                        order=1,
+                        prefilter=False)
+
+            if self.mode == 'dti':
+                self.__subject_S0_values[i] = zoom(self.__subject_S0_values[i],
+                                                   zoom=(1. / sr[0],
+                                                         1. / sr[1],
+                                                         1. / sr[2]),
+                                                   order=1,
+                                                   prefilter=False)
+
+            self.__subject_masks[i] = zoom(self.__subject_masks[i],
+                                           zoom=(1. / sr[0],
+                                                 1. / sr[1],
+                                                 1. / sr[2]),
+                                           order=0,
+                                           prefilter=False)
+
+            self.__subjects[i] = subj
+
+    def normalize(self,
+                  normalization_method: Literal["std", "constant", "percentile"],
+                  normalization_value,
+                  use_prev_metrics=False):
+
+        match self.mode:
+            case "dti":
+                norm_channels = [[0, 3, 5], [1, 2, 4]]
+            case _:
+                norm_channels = None
+
+        if ~use_prev_metrics:
+            self.normalization_metrics = []
+
+        for s, subj in enumerate(self.__subjects):
+
+            if ~use_prev_metrics:
+
+                norm_metrics = util.get_clip_values(subj, self.__subject_masks[s],
+                                                    data_mode=self.mode,
+                                                    clip_strategy=normalization_method,
+                                                    value=normalization_value)
+
+                self.normalization_metrics.append(norm_metrics)
+
+            util.apply_normalization_combined(subj, self.__subject_masks[s],
+                                              method="minmax" if normalization_method != "std" else "std",
+                                              channels=norm_channels,
+                                              values=self.normalization_metrics[s])
+
+    def denormalize(self, normalization_method):
+
+        match self.mode:
+            case "dti":
+                norm_channels = [[0, 3, 5], [1, 2, 4]]
+            case _:
+                norm_channels = None
+
+        for s, subj in enumerate(self.__subjects):
+            self.normalization_metrics.append(
+                util.revert_normalization_combined(subj,
+                                                   self.__subject_masks[s],
+                                                   self.normalization_metrics[s],
+                                                   method="minmax" if normalization_method != "std" else "std",
+                                                   channels=norm_channels)
+            )
+
+    def pad(self, pad_length):
+
+        if pad_length > 0:
+
+            for s in range(len(self.__subjects)):
+
+                self.__subjects[s] = np.pad(self.__subjects[s],
+                                            pad_width=np.array([[pad_length, pad_length],
+                                                                [pad_length, pad_length],
+                                                                [pad_length, pad_length],
+                                                                [0, 0]]), mode='edge')
+                self.__subject_masks[s] = np.pad(self.__subject_masks[s],
+                                                 pad_width=np.array([[pad_length, pad_length],
+                                                                     [pad_length, pad_length],
+                                                                     [pad_length, pad_length],
+                                                                     [0, 0]]), mode='edge')
+
+                if self.__subject_S0_values is not None:
+                    self.__subject_S0_values[s] = np.pad(self.__subject_S0_values[s],
+                                                         pad_width=np.array([[pad_length, pad_length],
+                                                                             [pad_length, pad_length],
+                                                                             [pad_length, pad_length],
+                                                                             [0, 0]]), mode='edge')
+
+        else:
+            for s in range(len(self.__subjects)):
+                self.__subjects[s] = self.__subjects[s][pad_length:-pad_length,
+                                                        pad_length:-pad_length,
+                                                        pad_length:-pad_length, :]
+                self.__subject_masks[s] = self.__subject_masks[s][pad_length:-pad_length,
+                                                                  pad_length:-pad_length,
+                                                                  pad_length:-pad_length, :]
+                if self.__subject_S0_values is not None:
+                    self.__subject_S0_values[s] = self.__subject_S0_values[s][pad_length:-pad_length,
+                                                                              pad_length:-pad_length,
+                                                                              pad_length:-pad_length, :]
+
+    def __getitem__(self, item) -> (Tuple[NDArray[float], NDArray[bool]] |
+                                    Tuple[NDArray[float], NDArray[bool], NDArray[float]]):
+        if self.mode == 'dti':
+            return self.__subjects[item], self.__subject_masks[item], self.__subject_S0_values[item]
+        elif self.mode == 'T1w':
+            return self.__subjects[item], self.__subject_masks[item]
+        else:
+            raise NotImplementedError("This modality does not exist!")
 
     def load_data(self):
 
@@ -453,18 +584,10 @@ class DataLoader:
                         self.file_head
                     )
 
-                    subject_mask = subject_data[..., 0]
-
-                    self.__subject_masks.append(np.copy(subject_mask))
+                    self.__subject_masks.append(np.array(subject_data[..., 0] >= 0, dtype=bool))
                     self.__subject_S0_values.append(np.copy(subject_data[..., 1]))
 
                     subject_data = subject_data[..., 2:]
-
-                    if self.normalization_method is not None:
-                        self.normalization_metrics.append(
-                            util.apply_normalization(subject_data,
-                                                     np.array(subject_mask == 0),
-                                                     self.normalization_method))
 
                     self.__subjects.append(subject_data)
 
@@ -484,16 +607,9 @@ class DataLoader:
                         self.file_head
                     )
 
-                    subject_mask = np.array(subject_data != 0)[..., 0]
+                    subject_mask = np.array(subject_data[..., 0] > 0, dtype=bool)
 
                     self.__subject_masks.append(subject_mask)
-
-                    if self.normalization_method is not None:
-                        self.normalization_metrics.append(
-                            util.apply_normalization(subject_data,
-                                                     subject_mask,
-                                                     self.normalization_method))
-
                     self.__subjects.append(subject_data)
 
                 return
@@ -512,7 +628,7 @@ class DataLoader:
     def get_patch(self,
                   subj: int,
                   coords: Tuple[int, int, int],
-                  patch_size=5) -> tf.Tensor:
+                  patch_size=16) -> tf.Tensor:
         (i, j, k) = coords
 
         return tf.convert_to_tensor(self.__subjects[subj][
@@ -524,13 +640,13 @@ class DataLoader:
     def get_mask(self,
                  subj: int,
                  coords: List[int],
-                 patch_size=5) -> np.ndarray:
+                 patch_size=16) -> NDArray[bool]:
         (i, j, k) = coords
 
-        return (self.__subject_masks[subj][
-                i - patch_size // 2:i + ceil(patch_size / 2),
-                j - patch_size // 2:j + ceil(patch_size / 2),
-                k - patch_size // 2:k + ceil(patch_size / 2)] == 0)
+        return self.__subject_masks[subj][
+               i - patch_size // 2:i + ceil(patch_size / 2),
+               j - patch_size // 2:j + ceil(patch_size / 2),
+               k - patch_size // 2:k + ceil(patch_size / 2)]
 
     def get_grid_indices(self,
                          subj: int,
@@ -557,27 +673,43 @@ class DataLoader:
 
     def get_mask_indices(self,
                          subj: int,
-                         patch_size=5):
+                         patch_size=16,
+                         patch_spacing=12,
+                         random_shift=True):
 
-        mask = (self.__subject_masks[subj] == 0)
+        # mask = self.__subject_masks[subj]
+        #
+        # dims = mask.shape
+        #
+        # possible_indices = np.array(np.where(mask)).T
+        #
+        # is_keep: np.ndarray[bool] = np.zeros((possible_indices.shape[0], 6), dtype=bool)
+        #
+        # is_keep[:, 0] = (possible_indices[:, 0] - patch_size) >= 0
+        # is_keep[:, 1] = (possible_indices[:, 0] + patch_size) < dims[0]
+        # is_keep[:, 2] = (possible_indices[:, 1] - patch_size) >= 0
+        # is_keep[:, 3] = (possible_indices[:, 1] + patch_size) < dims[1]
+        # is_keep[:, 4] = (possible_indices[:, 2] - patch_size) >= 0
+        # is_keep[:, 5] = (possible_indices[:, 2] + patch_size) < dims[2]
+        #
+        # is_keep = np.all(is_keep, axis=1)
+        # row_list = np.delete(np.array(range(possible_indices.shape[0])), np.where(~is_keep), 0)
+        #
+        # indices = possible_indices[row_list, :]
 
-        dims = mask.shape
+        mask = self.__subject_masks[subj]
 
-        possible_indices = np.array(np.where(mask)).T
+        sel_mask_indices = np.zeros(mask.shape, dtype=bool)
 
-        is_keep: np.ndarray[bool] = np.zeros((possible_indices.shape[0], 6), dtype=bool)
+        randshift = (randint(0, patch_spacing // 4),
+                     randint(0, patch_spacing // 4),
+                     randint(0, patch_spacing // 4)) if random_shift else (0, 0, 0)
 
-        is_keep[:, 0] = (possible_indices[:, 0] - patch_size) >= 0
-        is_keep[:, 1] = (possible_indices[:, 0] + patch_size) < dims[0]
-        is_keep[:, 2] = (possible_indices[:, 1] - patch_size) >= 0
-        is_keep[:, 3] = (possible_indices[:, 1] + patch_size) < dims[1]
-        is_keep[:, 4] = (possible_indices[:, 2] - patch_size) >= 0
-        is_keep[:, 5] = (possible_indices[:, 2] + patch_size) < dims[2]
+        sel_mask_indices[randshift[0]::patch_spacing,
+                         randshift[1]::patch_spacing,
+                         randshift[2]::patch_spacing] = True
 
-        is_keep = np.all(is_keep, axis=1)
-        row_list = np.delete(np.array(range(possible_indices.shape[0])), np.where(~is_keep), 0)
-
-        indices = possible_indices[row_list, :]
+        indices = np.array(np.where(sel_mask_indices & mask)).T
 
         return indices
 
@@ -585,50 +717,76 @@ class DataLoader:
 class TrainingSequence(keras.utils.Sequence):
 
     def __init__(self,
-                 data_dir,
+                 dti_data_dir,
+                 dti_data_subdir,
                  subject_labels,
-                 target_dir,
-                 input_dir,
+                 t1_data_dir,
+                 t1_data_subdir,
                  mode,
-                 data_dir_t1=None,
-                 t1_dir='T1w',
-                 normalization_method='stdscore',
+                 hr_downsamp_rate=1.,
+                 lr_downsamp_rates=[1.25/0.7],
                  pairs_per_subject=8000,
-                 ipatch_size=5,
-                 opatch_size=3,
+                 patch_size=16,
+                 patch_spacing=12,
                  batch_size=6):
 
         self.subject_labels = subject_labels
-        self.ipatch_size = ipatch_size
-        self.opatch_size = opatch_size
+        self.patch_size = patch_size
+        self.patch_spacing = patch_spacing
         self.batch_size = batch_size
         self.pairs_per_subject = pairs_per_subject
 
+        self.hr_downsamp_rate=hr_downsamp_rate
+        self.lr_downsamp_rates=lr_downsamp_rates
+
+        self.__input_data: List[DataLoader] = []
+
         self.__no_batches = ceil(len(self.subject_labels) * self.pairs_per_subject / self.batch_size)
 
-        self.__target_data: DataLoader = DataLoader(data_dir=data_dir,
-                                                    subject_labels=subject_labels,
-                                                    subdir=target_dir,
-                                                    mode=mode,
-                                                    normalization_method=normalization_method)
+        orig_data = DataLoader(data_dir=dti_data_dir,
+                               subject_labels=subject_labels,
+                               subdir=dti_data_subdir,
+                               mode=mode)
+
+        self.__target_data: DataLoader = copy.deepcopy(orig_data)
+
+        self.__target_data.resample(hr_downsamp_rate)
+
+        hr_shape = self.__target_data[0][0].shape
 
         print("Loaded target data.")
 
-        self.__input_data: DataLoader = DataLoader(data_dir=data_dir,
-                                                   subject_labels=subject_labels,
-                                                   subdir=input_dir,
-                                                   mode=mode,
-                                                   normalization_method=normalization_method,
-                                                   file_head='dt_b1000_lowres_4_')
+        for dr, lr_downsamp_rate in enumerate(tqdm(self.lr_downsamp_rates)):
+
+            idata: DataLoader = copy.deepcopy(orig_data)
+
+            idata.resample(hr_downsamp_rate*lr_downsamp_rate)
+
+            lr_shape = idata[0][0].shape
+
+            resize_scale = (lr_shape[0] / hr_shape[0],
+                            lr_shape[1] / hr_shape[1],
+                            lr_shape[2] / hr_shape[2])
+
+            idata.resample(resize_scale)
+
+            self.__input_data.append(idata)
 
         print("Loaded low-res input data.")
 
-        self.__t1_data: DataLoader = DataLoader(data_dir=(data_dir_t1 if data_dir_t1 is not None else data_dir),
+        self.__t1_data: DataLoader = DataLoader(data_dir=t1_data_dir,
                                                 subject_labels=subject_labels,
-                                                subdir=t1_dir,
+                                                subdir=t1_data_subdir,
                                                 mode='T1w',
-                                                normalization_method=normalization_method,
                                                 file_head='T1w_acpc_dc_restore_brain')
+
+        t1_shape = self.__target_data[0][0].shape
+
+        resize_scale = (t1_shape[0] / hr_shape[0],
+                        t1_shape[1] / hr_shape[1],
+                        t1_shape[2] / hr_shape[2])
+
+        self.__t1_data.resample(resize_scale)
 
         print("Loaded structural input data.")
 
@@ -642,15 +800,9 @@ class TrainingSequence(keras.utils.Sequence):
 
     def sample_slice(self, subj, coords: Tuple[int, int, int]):
 
-        i_patch = self.__input_data.get_patch(subj, coords, self.ipatch_size)
-        t_patch = self.__target_data.get_patch(subj, coords, self.opatch_size)
-
-        t1_coords = (round(coords[0] * 1.25 / 0.7),
-                     round(coords[1] * 1.25 / 0.7),
-                     round(coords[2] * 1.25 / 0.7))  # Will change, placeholder values from existing HCP data
-
-        t1_patch = self.__t1_data.get_patch(subj, t1_coords,
-                                            self.opatch_size * 2)  # round(self.opatch_size * 1.25/0.7))
+        i_patch = self.__input_data[0].get_patch(subj, coords, self.patch_size)
+        t_patch = self.__target_data.get_patch(subj, coords, self.patch_size)
+        t1_patch = self.__t1_data.get_patch(subj, coords, self.patch_size)
 
         return tf.convert_to_tensor(t_patch), tf.convert_to_tensor(i_patch), tf.convert_to_tensor(t1_patch)
 
@@ -676,17 +828,22 @@ class TrainingSequence(keras.utils.Sequence):
         valid_patch_indices = []
 
         for s in range(len(self.subject_labels)):
-            valid_patch_index = self.__target_data.get_mask_indices(s, self.ipatch_size)
 
-            valid_patch_indices.append(
-                np.concatenate(
-                    [np.full((valid_patch_index.shape[0], 1), s), valid_patch_index],
-                    axis=-1
+            subj_valid_indices = []
+
+            for r in range(len(self.lr_downsamp_rates)):
+                valid_patch_index = self.__target_data.get_mask_indices(s, self.patch_size, self.patch_spacing)
+
+                subj_valid_indices.append(
+                    np.concatenate([
+                        np.full((valid_patch_index.shape[0], 1), s),
+                        np.full((valid_patch_index.shape[0], 1), r),
+                        valid_patch_index], axis=-1)
                 )
-            )
+
+            valid_patch_indices.append(np.concatenate(subj_valid_indices))
 
         return valid_patch_indices
-        # return np.concatenate(valid_patch_indices, axis=0)
 
     def __getitem__(self, index):
 
@@ -694,17 +851,12 @@ class TrainingSequence(keras.utils.Sequence):
         input_patches = []
         t1_patches = []
 
-        # for (s, i, j, k) in self.valid_patch_indices[index:index + self.batch_size]:
-        for (s, i, j, k) in self.__cur_epoch_indices[index:min(index + self.batch_size, self.__no_batches)]:
-            target_patch = self.__target_data.get_patch(s, (i, j, k), self.opatch_size)
-            input_patch = self.__input_data.get_patch(s, (i, j, k), self.ipatch_size)
+        for (s, r, i, j, k) in self.__cur_epoch_indices[index:min(index + self.batch_size, self.__no_batches)]:
+            target_patch = self.__target_data.get_patch(s, (i, j, k), self.patch_size)
 
-            t1_coords = (round(i * 1.25 / 0.7),
-                         round(j * 1.25 / 0.7),
-                         round(k * 1.25 / 0.7))  # Will change, placeholder values from existing HCP data
+            input_patch = self.__input_data[r].get_patch(s, (i, j, k), self.patch_size)
 
-            t1_patch = self.__t1_data.get_patch(s, t1_coords,
-                                                self.opatch_size * 2)  # round(self.opatch_size * 1.25 / 0.7))
+            t1_patch = self.__t1_data.get_patch(s, (i, j, k), self.patch_size)
 
             target_patches.append(target_patch)
             input_patches.append(input_patch)
@@ -718,3 +870,29 @@ class TrainingSequence(keras.utils.Sequence):
     def on_epoch_end(self):
 
         self.__sel_epoch_indices__()
+
+
+if __name__ == '__main__':
+
+    # dataloader = DataLoader("../data/", ["100307", "101915"], "HR", "dti")
+    # dti, mask, s0 = dataloader[0]
+    # dataloader.resample(2)
+    # dti_lr, mask_lr, s0_lr = dataloader[0]
+    # resamp_rate = (72 / 145, 87 / 174, 72 / 145)
+    # dataloader.resample(resamp_rate)
+    #
+    # dataloader.normalize("minmax", 2e-3)
+
+    trainseq = TrainingSequence(dti_data_dir="../data",
+                                dti_data_subdir="HR",
+                                subject_labels=["100307", "101915", "221319"],
+                                t1_data_dir="../data",
+                                t1_data_subdir="T1w",
+                                mode="dti",
+                                hr_downsamp_rate=1.,
+                                lr_downsamp_rates=[1.25, 1.5, 2, 2.5],
+                                pairs_per_subject=400,
+                                patch_size=16,
+                                batch_size=40)
+
+    pass
