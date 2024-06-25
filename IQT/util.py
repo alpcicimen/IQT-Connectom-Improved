@@ -271,7 +271,7 @@ def revert_normalization_combined(tensors, mask, norm_metrics,
 
 def get_clip_values(tensors, mask, data_mode, clip_strategy, value: float = 3e-3) -> NDArray[float]:
 
-    match data_mode:
+    match str.lower(data_mode):
 
         case 'dti':
 
@@ -363,7 +363,7 @@ def apply_clipped_normalization(tensors,
             return None
 
 
-def apply_gaussian_filter(input: NDArray[float], downsample_rate) -> NDArray[float]:
+def apply_gaussian_filter(input_img: NDArray[float], downsample_rate) -> NDArray[float]:
 
     std_value = 2 * np.log(10) / (2 * np.pi) * downsample_rate
     kernel_size = np.int32(np.ceil(2.5 * std_value) / 2) * 2 + 1
@@ -378,11 +378,11 @@ def apply_gaussian_filter(input: NDArray[float], downsample_rate) -> NDArray[flo
 
     gaussian_kernel /= np.sum(gaussian_kernel)
 
-    if len(input.shape) == 3:
-        return convolve(input, gaussian_kernel, mode='constant')
+    if len(input_img.shape) == 3:
+        return convolve(input_img, gaussian_kernel, mode='constant')
     else:
         return np.stack([convolve(channel, gaussian_kernel, mode='constant')
-                         for channel in np.moveaxis(input, -1, 0)], axis=-1)
+                         for channel in np.moveaxis(input_img, -1, 0)], axis=-1)
 
 
 def md_fa_cfa(tensors, mask,
