@@ -441,6 +441,12 @@ class DataLoader:
 
         self.load_data()
 
+    def get_masks(self):
+        return self.__subject_masks
+
+    def set_masks(self, masks):
+        self.__subject_masks = copy.deepcopy(masks)
+
     def resample(self,
                  sampling_rate: float | Tuple[float, float, float] = 1.25/0.7):
 
@@ -453,7 +459,7 @@ class DataLoader:
             subj = self.__subjects[i]
 
             if np.mean(sampling_rate) > 1.:
-                subj = util.apply_gaussian_filter(subj, sampling_rate)
+                subj = util.apply_gaussian_filter(subj, np.mean(sampling_rate))
 
             subj = zoom(subj,
                         zoom=(1. / sr[0],
@@ -509,6 +515,8 @@ class DataLoader:
                                               channels=norm_channels,
                                               values=self.normalization_metrics[s])
 
+            subj[~self.__subject_masks[s], :] = 0
+
     def denormalize(self, normalization_method):
 
         match self.mode:
@@ -518,13 +526,12 @@ class DataLoader:
                 norm_channels = None
 
         for s, subj in enumerate(self.__subjects):
-            self.normalization_metrics.append(
-                util.revert_normalization_combined(subj,
-                                                   self.__subject_masks[s],
-                                                   self.normalization_metrics[s],
-                                                   method="minmax" if normalization_method != "std" else "std",
-                                                   channels=norm_channels)
-            )
+            util.revert_normalization_combined(subj,
+                                               self.__subject_masks[s],
+                                               self.normalization_metrics[s],
+                                               method="minmax" if normalization_method != "std" else "std",
+                                               channels=norm_channels)
+            subj[~self.__subject_masks[s], :] = 0
 
     def pad(self, pad_length):
 
@@ -540,15 +547,13 @@ class DataLoader:
                 self.__subject_masks[s] = np.pad(self.__subject_masks[s],
                                                  pad_width=np.array([[pad_length, pad_length],
                                                                      [pad_length, pad_length],
-                                                                     [pad_length, pad_length],
-                                                                     [0, 0]]), mode='edge')
+                                                                     [pad_length, pad_length]]), mode='edge')
 
                 if self.__subject_S0_values is not None:
                     self.__subject_S0_values[s] = np.pad(self.__subject_S0_values[s],
                                                          pad_width=np.array([[pad_length, pad_length],
                                                                              [pad_length, pad_length],
-                                                                             [pad_length, pad_length],
-                                                                             [0, 0]]), mode='edge')
+                                                                             [pad_length, pad_length]]), mode='edge')
 
         else:
             for s in range(len(self.__subjects)):
@@ -557,11 +562,11 @@ class DataLoader:
                                                         pad_length:-pad_length, :]
                 self.__subject_masks[s] = self.__subject_masks[s][pad_length:-pad_length,
                                                                   pad_length:-pad_length,
-                                                                  pad_length:-pad_length, :]
+                                                                  pad_length:-pad_length]
                 if self.__subject_S0_values is not None:
                     self.__subject_S0_values[s] = self.__subject_S0_values[s][pad_length:-pad_length,
                                                                               pad_length:-pad_length,
-                                                                              pad_length:-pad_length, :]
+                                                                              pad_length:-pad_length]
 
     def __getitem__(self, item) -> (Tuple[NDArray[float], NDArray[bool]] |
                                     Tuple[NDArray[float], NDArray[bool], NDArray[float]]):
@@ -673,29 +678,8 @@ class DataLoader:
 
     def get_mask_indices(self,
                          subj: int,
-                         patch_size=16,
                          patch_spacing=12,
                          random_shift=True):
-
-        # mask = self.__subject_masks[subj]
-        #
-        # dims = mask.shape
-        #
-        # possible_indices = np.array(np.where(mask)).T
-        #
-        # is_keep: np.ndarray[bool] = np.zeros((possible_indices.shape[0], 6), dtype=bool)
-        #
-        # is_keep[:, 0] = (possible_indices[:, 0] - patch_size) >= 0
-        # is_keep[:, 1] = (possible_indices[:, 0] + patch_size) < dims[0]
-        # is_keep[:, 2] = (possible_indices[:, 1] - patch_size) >= 0
-        # is_keep[:, 3] = (possible_indices[:, 1] + patch_size) < dims[1]
-        # is_keep[:, 4] = (possible_indices[:, 2] - patch_size) >= 0
-        # is_keep[:, 5] = (possible_indices[:, 2] + patch_size) < dims[2]
-        #
-        # is_keep = np.all(is_keep, axis=1)
-        # row_list = np.delete(np.array(range(possible_indices.shape[0])), np.where(~is_keep), 0)
-        #
-        # indices = possible_indices[row_list, :]
 
         mask = self.__subject_masks[subj]
 
@@ -728,16 +712,38 @@ class TrainingSequence(keras.utils.Sequence):
                  pairs_per_subject=8000,
                  patch_size=16,
                  patch_spacing=12,
-                 batch_size=6):
+                 clip_strategy: Literal["std", "constant", "percentile"] = 'constant',
+                 clip_value=2e-3,
+                 random_shift=False,
+                 batch_size=6,
+                 augment_t1=True,
+                 gamma_std=0.1,
+                 contrast_std=0.1,
+                 brightness_std=0.1,
+                 max_noise_std=0.1):
 
         self.subject_labels = subject_labels
+
         self.patch_size = patch_size
         self.patch_spacing = patch_spacing
+
+        self.clip_strategy = clip_strategy
+        self.clip_value = clip_value
+
+        self.random_shift = random_shift
+
         self.batch_size = batch_size
         self.pairs_per_subject = pairs_per_subject
 
-        self.hr_downsamp_rate=hr_downsamp_rate
-        self.lr_downsamp_rates=lr_downsamp_rates
+        self.augment_t1 = augment_t1
+
+        self.gamma_std = gamma_std
+        self.contrast_std = contrast_std
+        self.brightness_std = brightness_std
+        self.max_noise_std = max_noise_std
+
+        self.hr_downsamp_rate = hr_downsamp_rate
+        self.lr_downsamp_rates = lr_downsamp_rates
 
         self.__input_data: List[DataLoader] = []
 
@@ -770,6 +776,12 @@ class TrainingSequence(keras.utils.Sequence):
 
             idata.resample(resize_scale)
 
+            idata.set_masks(self.__target_data.get_masks())
+
+            idata.pad(self.patch_size // 2)
+
+            idata.normalize(self.clip_strategy, self.clip_value)
+
             self.__input_data.append(idata)
 
         print("Loaded low-res input data.")
@@ -780,13 +792,21 @@ class TrainingSequence(keras.utils.Sequence):
                                                 mode='T1w',
                                                 file_head='T1w_acpc_dc_restore_brain')
 
-        t1_shape = self.__target_data[0][0].shape
+        t1_shape = self.__t1_data[0][0].shape
 
         resize_scale = (t1_shape[0] / hr_shape[0],
                         t1_shape[1] / hr_shape[1],
                         t1_shape[2] / hr_shape[2])
 
         self.__t1_data.resample(resize_scale)
+
+        self.__target_data.pad(self.patch_size // 2)
+        self.__t1_data.pad(self.patch_size // 2)
+
+        self.__t1_data.set_masks(self.__target_data.get_masks())
+
+        self.__target_data.normalize("constant", 2e-3)
+        self.__t1_data.normalize("percentile", 96)
 
         print("Loaded structural input data.")
 
@@ -795,8 +815,6 @@ class TrainingSequence(keras.utils.Sequence):
         self.__cur_epoch_indices = None
 
         self.__sel_epoch_indices__()
-
-        # npr.shuffle(self.valid_patch_indices)
 
     def sample_slice(self, subj, coords: Tuple[int, int, int]):
 
@@ -832,7 +850,7 @@ class TrainingSequence(keras.utils.Sequence):
             subj_valid_indices = []
 
             for r in range(len(self.lr_downsamp_rates)):
-                valid_patch_index = self.__target_data.get_mask_indices(s, self.patch_size, self.patch_spacing)
+                valid_patch_index = self.__target_data.get_mask_indices(s, self.patch_spacing, self.random_shift)
 
                 subj_valid_indices.append(
                     np.concatenate([
@@ -844,6 +862,21 @@ class TrainingSequence(keras.utils.Sequence):
             valid_patch_indices.append(np.concatenate(subj_valid_indices))
 
         return valid_patch_indices
+
+    def __augment_t1__(self, input_t1):
+
+        gamma_t1 = np.exp(self.gamma_std * np.random.randn(1)[0])
+
+        contrast = np.min((1.4, np.max((0.6, 1.0 + self.contrast_std * np.random.randn(1)[0]))))
+        brightness = np.min((0.4, np.max((-0.4, self.brightness_std * np.random.randn(1)[0]))))
+
+        noise_std = self.max_noise_std * np.random.rand(1)[0]
+
+        modified_t1 = ((input_t1 - 0.5) * contrast + (0.5 + brightness)) + noise_std * np.random.randn(*input_t1.shape)
+
+        modified_t1 = np.clip(modified_t1, 0, 1)
+        modified_t1 = modified_t1 ** gamma_t1
+        return modified_t1
 
     def __getitem__(self, index):
 
@@ -858,6 +891,9 @@ class TrainingSequence(keras.utils.Sequence):
 
             t1_patch = self.__t1_data.get_patch(s, (i, j, k), self.patch_size)
 
+            if self.augment_t1:
+                t1_patch = self.__augment_t1__(t1_patch)
+
             target_patches.append(target_patch)
             input_patches.append(input_patch)
             t1_patches.append(t1_patch)
@@ -871,28 +907,3 @@ class TrainingSequence(keras.utils.Sequence):
 
         self.__sel_epoch_indices__()
 
-
-if __name__ == '__main__':
-
-    # dataloader = DataLoader("../data/", ["100307", "101915"], "HR", "dti")
-    # dti, mask, s0 = dataloader[0]
-    # dataloader.resample(2)
-    # dti_lr, mask_lr, s0_lr = dataloader[0]
-    # resamp_rate = (72 / 145, 87 / 174, 72 / 145)
-    # dataloader.resample(resamp_rate)
-    #
-    # dataloader.normalize("minmax", 2e-3)
-
-    trainseq = TrainingSequence(dti_data_dir="../data",
-                                dti_data_subdir="HR",
-                                subject_labels=["100307", "101915", "221319"],
-                                t1_data_dir="../data",
-                                t1_data_subdir="T1w",
-                                mode="dti",
-                                hr_downsamp_rate=1.,
-                                lr_downsamp_rates=[1.25, 1.5, 2, 2.5],
-                                pairs_per_subject=400,
-                                patch_size=16,
-                                batch_size=40)
-
-    pass
