@@ -396,7 +396,7 @@ class PairSequence(keras.utils.Sequence):
         return (tf.cast(tf.stack(target_patches), dtype=tf.float32),
                 (tf.cast(tf.stack(input_patches), dtype=tf.float32), tf.cast(tf.stack(t1_patches), dtype=tf.float32)))
 
-    def sample_slice(self, subj, *_):
+    def sample_patch(self, subj, *_):
 
         patch_indx = '100_ds0.npy'
 
@@ -427,6 +427,17 @@ class DataLoader:
                  subdir='.',
                  mode: Literal["dti", "T1w"] = 'dti',
                  file_head='dt_b1000_'):
+        """
+        The basic dataloader class to parse and store in memory the IQT training data. Currently this class can read,
+        parse and store either T1w or DTI data.
+
+        :param data_dir: The root data directory to read the data from
+        :param subject_labels: The subject labels to read the data from. We store the
+        :param subdir:
+        :param mode:
+        :param file_head:
+        """
+
         self.data_dir = data_dir
         self.subdir = subdir
         self.subject_labels = subject_labels
@@ -449,6 +460,12 @@ class DataLoader:
 
     def resample(self,
                  sampling_rate: float | Tuple[float, float, float] = 1.25/0.7):
+        """
+        Resamples every subject in the
+
+        :param sampling_rate:
+        :return:
+        """
 
         sr = sampling_rate \
             if type(sampling_rate) is tuple \
@@ -579,7 +596,7 @@ class DataLoader:
 
     def load_data(self):
 
-        match self.mode:
+        match str.lower(self.mode):
 
             case "dti":
                 for subject in self.subject_labels:
@@ -599,9 +616,9 @@ class DataLoader:
                 return
 
             case "map":
-                return
+                raise NotImplementedError("MAP-MRI implementation is not yet implemented.")
 
-            case "T1w":
+            case "t1w":
 
                 self.__subject_S0_values = None
 
@@ -625,7 +642,7 @@ class DataLoader:
 
     def shape(self, subj):
 
-        if self.mode == 'T1w':
+        if str.lower(self.mode) == 't1w':
             return self.__subjects[subj].shape
 
         return self.__subjects[subj].shape[:-1]
@@ -680,6 +697,17 @@ class DataLoader:
                          subj: int,
                          patch_spacing=12,
                          random_shift=True):
+        """
+        Returns every patch centroid coordinate with patches containing masked voxels with a certain spacing.
+
+        :param subj: The subject to the mask indices from. This value is the array index and not the subject id.
+        :param patch_spacing: The spacing between patch centroids.
+            A spacing of 12 for patch sizes of 16 means that 8**3 voxels at the centre do not overlap.
+        :param random_shift: A randomizer for shifting the patch centroid grid. This doesn't randomize the spacing, but
+            rather the centroid values of the patch grid, meaning that the patches are still equally spaced but have the
+            centre indices shifted by the same amount.
+        :return: An integer array with valid patch indices of form [N, 3] where N is the number of valid indices.
+        """
 
         mask = self.__subject_masks[subj]
 
@@ -709,7 +737,7 @@ class TrainingSequence(keras.utils.Sequence):
                  mode,
                  hr_downsamp_rate=1.,
                  lr_downsamp_rates=[1.25/0.7],
-                 pairs_per_subject=8000,
+                 pairs_per_subject: int | None = 8000,
                  patch_size=16,
                  patch_spacing=12,
                  clip_strategy: Literal["std", "constant", "percentile"] = 'constant',
@@ -721,6 +749,74 @@ class TrainingSequence(keras.utils.Sequence):
                  contrast_std=0.1,
                  brightness_std=0.1,
                  max_noise_std=0.1):
+        """
+        The data loader for the IQT pipeline. This function reads, processes and stores in memory the High-Resolution
+        DTI images, the (possibly resampled) High-Resolution T1w data and the multiple Low-Resolution DTI data.
+
+        This implementation resembles the `DataLoader` primitive from PyTorch, and requires two functions to be defined
+        in order to be used by Keras' `Model.fit()`: `__getitem__` and `__len__`.
+
+        The data loader loads the data from the high-res DTI directories of format
+        {dti_data_dir}/{subject_label}/{dti_data_subdir}, and high-res T1w input as
+        {t1_data_dir}/{subject_label}/{t1_data_subdir}
+
+        Args:
+            dti_data_dir: The root data directory for the DTI input to be read from.
+            dti_data_subdir: The data subdirectory of the DTI input (After the subject label directory)
+            subject_labels: The list of subject labels for the data to be loaded.
+            t1_data_dir: The root data directory for the T1 weighted input to be read from. Set this to dti dir if they
+            are located under the same directory.
+            t1_data_subdir: The data subdirectory under subjects where the T1w input can be found.
+            mode: The data mode of the dataloader for parsing and processing the diffusion input.
+                Currently only \"dti\" is supported.
+            hr_downsamp_rate: The (single) High-Resolution Target downsampling rate.
+                If > 1, the input data will be downsampled by the specified rate. The new resolution will thus be
+                R_target = R_input * hr_downsamp_rate
+            lr_downsamp_rates: The downsampling rates for the DTI to be scaled down to.
+                The resulting image will be of final resolution R_lr = R_input * hr_downsamp_rate, but will contain as
+                much information as an image at resolution
+                R_lract = R_input * hr_downsamp_rate * lr_downsamp_rate.
+                This value is multiplicative with the hr downsampling rate, meaning that the downsampling from input
+                is the product of the two rates.
+            pairs_per_subject: Number of HR target - LR input pairs selected per subject scan.
+                The loader randomly selects this amount from all upsampling rates per each subject.
+                If set to None the loader selects every patch for all upsampling rates, but shuffles them.
+            patch_size: The length of the patch for our model. The resulting patch will be of volume (patch_size)^3.
+            patch_spacing: The spacing between every patch centroids.
+            clip_strategy: The clipping strategy employed by the normalisation algorithm.
+                Valid options are "std" for clipping based on subjectwise standard deviation values,
+                "percentile" for clipping between specific percentiles and "constant" for constant values.
+                Currently, T1w is only defined for "percentile",
+                while DTI has "constant" and "std" configurations in addition to "percentile".
+            clip_value: The value used for the clipping algorithm.
+
+                    For "constant", the values are clipped to either [0, clip_value] for diagonal DTI values,
+                    or [-clip_value, clip_value] for non-diagonal DTI values.
+
+                    For "percentile", the values are clipped to [0, percentile] for diagonal DTI values,
+                    [-percentile, percentile] for non-diagonal DTI values,
+                    where percentile is the higher percentile value corresponding to the clip_value's percentile.
+                    For the T1w data, the input is clipped to range [lower_percentile, higher_percentile], such that
+                    the difference between the lower and higher percentiles is equal to the clip value.
+
+                    For "std" the values are clipped to specific std range specified by the clip value. For example,
+                    clip value of 2 means that the images are clipped to 2 standard deviation ranges.
+            random_shift: The boolean value that determines whether the patch grid will be randomly shifted.
+                See `DataLoader.get_mask_indices` for more details.
+            batch_size: The minibatch size for our training. After the iteration patches are selected,
+                we select minibatches and pass it per every training iteration in an epoch.
+            augment_t1: Boolean value that determines whether the T1w data will be augmented randomly.
+            gamma_std: The maximum std
+            contrast_std:
+            brightness_std:
+            max_noise_std:
+        """
+
+########################################################################################################################
+
+# ------------------------------------------- Dataloader Parameter Setup -----------------------------------------------
+
+########################################################################################################################
 
         self.subject_labels = subject_labels
 
@@ -747,37 +843,55 @@ class TrainingSequence(keras.utils.Sequence):
 
         self.__input_data: List[DataLoader] = []
 
-        self.__no_batches = ceil(len(self.subject_labels) * self.pairs_per_subject / self.batch_size)
+########################################################################################################################
+
+# --------------------------------------- DTI Data Target Load and Setup -----------------------------------------------
+
+########################################################################################################################
 
         orig_data = DataLoader(data_dir=dti_data_dir,
                                subject_labels=subject_labels,
                                subdir=dti_data_subdir,
                                mode=mode)
 
-        self.__target_data: DataLoader = copy.deepcopy(orig_data)
+        self.__target_data: DataLoader = copy.deepcopy(orig_data)  # Copy by value and keep orig as reference
 
-        self.__target_data.resample(hr_downsamp_rate)
+        self.__target_data.resample(hr_downsamp_rate)  # Resample to a specific resolution if necessary
 
-        hr_shape = self.__target_data[0][0].shape
+        hr_shape = self.__target_data[0][0].shape  # Keep target DTI shape as reference
 
         print("Loaded target data.")
 
-        for dr, lr_downsamp_rate in enumerate(tqdm(self.lr_downsamp_rates)):
+########################################################################################################################
+
+# --------------------------------------- DTI Low-Resolution Input Setup -----------------------------------------------
+
+########################################################################################################################
+
+        for lr_downsamp_rate in tqdm(self.lr_downsamp_rates):
 
             idata: DataLoader = copy.deepcopy(orig_data)
 
+            # Resample to lower space from original DTI input resolution.
+            # This is done because the downsampling requires a gaussian blurring to remove aliasing effects, and
+            # applying gaussian blurring twice to go from orig -> target -> low-res would strip too much information
+            # to be useful.
             idata.resample(hr_downsamp_rate*lr_downsamp_rate)
 
             lr_shape = idata[0][0].shape
 
+            # Fit to exact dimensions of the DTI target image dimensions.
+            # This ensures that the image dimensions will be equal.
             resize_scale = (lr_shape[0] / hr_shape[0],
                             lr_shape[1] / hr_shape[1],
                             lr_shape[2] / hr_shape[2])
 
             idata.resample(resize_scale)
 
+            # This configuration ensures that
             idata.set_masks(self.__target_data.get_masks())
 
+            # Apply padding to ensure that selected patches are always of correct size.
             idata.pad(self.patch_size // 2)
 
             idata.normalize(self.clip_strategy, self.clip_value)
@@ -786,14 +900,27 @@ class TrainingSequence(keras.utils.Sequence):
 
         print("Loaded low-res input data.")
 
+########################################################################################################################
+
+# --------------------------------------- DTI Low-Resolution Input Setup -----------------------------------------------
+
+########################################################################################################################
+
         self.__t1_data: DataLoader = DataLoader(data_dir=t1_data_dir,
                                                 subject_labels=subject_labels,
                                                 subdir=t1_data_subdir,
                                                 mode='T1w',
                                                 file_head='T1w_acpc_dc_restore_brain')
 
+        # This implementation (rather a bit naively) assumes that every training subject has the same dimensions.
+        # While this is true for HCP, if you want to train on different datasets you should ensure every subject has
+        # the same dimensions.
         t1_shape = self.__t1_data[0][0].shape
 
+        # Apply similar rescaling as how we have done it for LR->target.
+        # However, you must ensure that:
+        # a) The images are centered,
+        # b) The T1w image contains every region contained within the DTI image, and vice versa.
         resize_scale = (t1_shape[0] / hr_shape[0],
                         t1_shape[1] / hr_shape[1],
                         t1_shape[2] / hr_shape[2])
@@ -805,22 +932,28 @@ class TrainingSequence(keras.utils.Sequence):
 
         self.__t1_data.set_masks(self.__target_data.get_masks())
 
-        self.__target_data.normalize("constant", 2e-3)
+        self.__target_data.normalize(self.clip_strategy, self.clip_value)
         self.__t1_data.normalize("percentile", 96)
 
         print("Loaded structural input data.")
 
         self.valid_patch_indices: List[np.ndarray] = self.__find_all_patch_indices__()
 
-        self.__cur_epoch_indices = None
-
         self.__sel_epoch_indices__()
 
-    def sample_slice(self, subj, coords: Tuple[int, int, int]):
+        self.__no_batches = ceil(self.__cur_epoch_indices.shape[0] / self.batch_size)
 
-        i_patch = self.__input_data[0].get_patch(subj, coords, self.patch_size)
-        t_patch = self.__target_data.get_patch(subj, coords, self.patch_size)
-        t1_patch = self.__t1_data.get_patch(subj, coords, self.patch_size)
+    def sample_patch(self, subj, coords: Tuple[int, int, int]):
+        """
+        Choose a sample patch
+        :param subj:
+        :param coords:
+        :return:
+        """
+
+        i_patch = self.__input_data[0].get_patch(subj, coords, self.patch_size)[None,...]
+        t_patch = self.__target_data.get_patch(subj, coords, self.patch_size)[None,...]
+        t1_patch = self.__t1_data.get_patch(subj, coords, self.patch_size)[None,...]
 
         return tf.convert_to_tensor(t_patch), tf.convert_to_tensor(i_patch), tf.convert_to_tensor(t1_patch)
 
@@ -830,7 +963,11 @@ class TrainingSequence(keras.utils.Sequence):
 
         for subj_index in self.valid_patch_indices:
             cur_epoch_indices.append(
-                subj_index[npr.choice(subj_index.shape[0], size=self.pairs_per_subject, replace=False)]
+                subj_index[npr.choice(subj_index.shape[0],
+                                      size=subj_index.shape[0]
+                                      if self.pairs_per_subject is None
+                                      else self.pairs_per_subject,
+                                      replace=False)]
             )
 
         cur_epoch_indices = np.concatenate(cur_epoch_indices, axis=0)

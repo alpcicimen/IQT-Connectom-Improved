@@ -175,7 +175,7 @@ def main(model_type,
 
     summary_writer = tf.summary.create_file_writer(log_dir)
 
-    (sample_t, sample_i, sample_t1) = train_seq.sample_slice(0, (60, 60, 60))
+    (sample_t, sample_i, sample_t1) = train_seq.sample_patch(0, (60, 60, 60))
 
     with (summary_writer.as_default()):
         tf.summary.image('Target Slice', sample_t[:, :, patch_size[0]//2, :, 0:1], step=0)
