@@ -172,7 +172,7 @@ class MinMaxNormLayer(Layer):
 
 class DTIFitLayer(Layer):
 
-    def __init__(self, bvals, bvecs, *args, **kwargs):
+    def __init__(self, acquisition_length, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.input_dims = None
@@ -181,26 +181,19 @@ class DTIFitLayer(Layer):
         self.permute1 = None
         self.permute2 = None
 
-        self.bvals = bvals if len(bvals.shape) == 1 else bvals[0]
-        self.bvecs = bvecs
-
-        X = np.zeros((bvals.shape[0], 7))
-
-        X[:, 0] = -self.bvals * np.power(self.bvecs[:, 0], 2)
-        X[:, 1] = -2 * (self.bvals * tf.multiply(self.bvecs[:, 0], self.bvecs[:, 1]))
-        X[:, 2] = -2 * (self.bvals * tf.multiply(self.bvecs[:, 0], self.bvecs[:, 2]))
-        X[:, 3] = -self.bvals * np.power(self.bvecs[:, 1], 2)
-        X[:, 4] = -2 * (self.bvals * tf.multiply(self.bvecs[:, 1], self.bvecs[:, 2]))
-        X[:, 5] = -self.bvals * np.power(self.bvecs[:, 2], 2)
-        X[:, 6] = 1
-
-        self.X = tf.convert_to_tensor(X, dtype=self.dtype)
+        self.acq_len = acquisition_length
 
     def build(self, input_shape):
 
-        self.input_dims = input_shape[1:-1]
+        assert (input_shape[0][-1],
+                input_shape[1][1],
+                input_shape[2][1]) == (self.acq_len,
+                                       self.acq_len,
+                                       self.acq_len), "Acquisition length must match the input length!"
+
+        self.input_dims = input_shape[0][1:-1]
         self.reshape1 = Reshape(target_shape=(self.input_dims[0] * self.input_dims[1] * self.input_dims[2],
-                                              input_shape[-1]))
+                                              self.acq_len))
         self.reshape1.build(input_shape)
         self.reshape2 = Reshape(target_shape=(self.input_dims[0], self.input_dims[1], self.input_dims[2], 6))
         self.reshape2.build(input_shape)
@@ -211,13 +204,31 @@ class DTIFitLayer(Layer):
         return super().build(input_shape)
 
     def compute_output_shape(self, input_shape):
-        return self.input_dims.concatenate(6)
+        return tf.TensorShape([input_shape[:-1] + (6, )])
+
+    @staticmethod
+    @tf.function
+    def __create_X__(bvals, bvecs):
+
+        c_00 = -tf.multiply(bvals, tf.pow(bvecs[..., 0, None], 2.))
+        c_01 = tf.multiply(tf.multiply(bvals, tf.multiply(bvecs[..., 0, None], bvecs[..., 1, None])), -2.)
+        c_02 = tf.multiply(tf.multiply(bvals, tf.multiply(bvecs[..., 0, None], bvecs[..., 2, None])), -2.)
+        c_11 = -tf.multiply(bvals, tf.pow(bvecs[..., 1, None], 2.))
+        c_12 = tf.multiply(tf.multiply(bvals, tf.multiply(bvecs[..., 1, None], bvecs[..., 2, None])), -2.)
+        c_22 = -tf.multiply(bvals, tf.pow(bvecs[..., 2, None], 2.))
+        c_ones = tf.ones(tf.shape(bvals))
+
+        X = tf.concat([c_00, c_01, c_02, c_11, c_12, c_22, c_ones], axis=-1)
+
+        return X
 
     @tf.function
-    def __fit__(self, inputs):
+    def __fit__(self, dwis, bvals, bvecs):
 
-        y = self.permute1(self.reshape1(tf.math.log(tf.add(inputs, keras.src.backend.epsilon()))))
-        b = tf.linalg.lstsq(self.X, y)
+        X = tf.cast(self.__create_X__(bvals, bvecs), dtype=self.dtype)
+
+        y = self.permute1(self.reshape1(tf.math.log(tf.add(dwis, keras.src.backend.epsilon()))))
+        b = tf.linalg.lstsq(X, y)
 
         out_tensor = self.reshape2(self.permute2(b)[..., :6])
         out_tensor = tf.where(tf.math.is_nan(out_tensor), tf.zeros_like(out_tensor), out_tensor)
@@ -225,28 +236,11 @@ class DTIFitLayer(Layer):
         return out_tensor
 
     def call(self, inputs, *args, **kwargs):
-        return self.__fit__(inputs)
+        assert isinstance(inputs, list) or isinstance(inputs, tuple)
+        assert len(inputs) == 3
 
+        return self.__fit__(inputs[0], inputs[1], inputs[2])
 
-    # def build(self, input_shape):
-
-        # igrid = tf.cast(tf.stack(tf.meshgrid(range(0, round(input_shape[1] / self.dsamp_rate[0])),
-        #                                      range(0, round(input_shape[2] / self.dsamp_rate[1])),
-        #                                      range(0, round(input_shape[3] / self.dsamp_rate[2])),
-        #                                      indexing='ij'), axis=-1), self.dtype)
-        #
-        # dims = tf.cast(tf.divide(input_shape[1:-1], igrid.shape[:-1]), dtype=self.dtype)
-        #
-        # self.igrid = tf.cast(tf.multiply(igrid, dims), dtype=self.dtype)
-
-        # self.reshape = Reshape(target_shape=(self.igrid.shape[0],
-        #                                      self.igrid.shape[1],
-        #                                      self.igrid.shape[2], input_shape[-1]),
-        #                        dtype=self.dtype,
-        #                        name='ReshapeLayer')
-        # self.reshape.build((int(self.igrid.shape[0] * self.igrid.shape[1] * self.igrid.shape[2]), input_shape[-1]))
-
-        # return super().build(input_shape)
 
 class InterpLayer(Layer):
 
