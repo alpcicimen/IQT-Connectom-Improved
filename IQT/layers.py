@@ -68,6 +68,65 @@ class SpaceToDepthLayer(Layer):
         return out
 
 
+class AugmentationLayer(Layer):
+
+    def __init__(self,
+                 contrast_std=0.,
+                 brightness_std=0.,
+                 max_noise_std=0.1,
+                 gamma_std=0.1, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.contrast_std = contrast_std
+        self.brightness_std = brightness_std
+        self.max_noise_std = max_noise_std
+        self.gamma_std = gamma_std
+
+    # @tf.function
+    def __augment__(self, inputs):
+
+        # contrast = tf.minimum(1.4, tf.maximum(0.6, tf.add(1.0, tf.random.normal((), stddev=self.contrast_std))))
+        #
+        # brightness = tf.minimum(0.4, tf.maximum(-0.4, tf.random.normal((), stddev=self.brightness_std)))
+        #
+        # noise_stddev = tf.random.uniform(tf.shape(inputs), maxval=self.max_noise_std)
+        #
+        # modified_output = tf.add(
+        #     tf.add(tf.multiply(tf.subtract(inputs, 0.5), contrast), tf.add(0.5, brightness)),
+        #     tf.random.normal(tf.shape(inputs), stddev=noise_stddev)
+        # )
+
+        modified_output = inputs
+
+        if self.max_noise_std > 0:
+            noise_stddev = tf.random.uniform(tf.shape(inputs), maxval=self.max_noise_std)
+            noise = tf.multiply(tf.math.reduce_std(inputs, axis=[1, 2, 3], keepdims=True),
+                                tf.random.normal(tf.shape(inputs), stddev=noise_stddev))
+            modified_output = modified_output + noise
+
+        modified_output = tf.clip_by_value(modified_output,
+                                           tf.reduce_min(inputs, axis=[1, 2, 3], keepdims=True),
+                                           tf.reduce_max(inputs, axis=[1, 2, 3], keepdims=True))
+
+        if self.gamma_std > 0:
+
+            gamma_t1 = tf.exp(tf.random.normal((), stddev=self.gamma_std))
+
+            modified_output_min = tf.reduce_min(modified_output, axis=[1, 2, 3], keepdims=True)
+            modified_output_max = tf.reduce_max(modified_output, axis=[1, 2, 3], keepdims=True)
+
+            modified_output = tf.pow((modified_output - modified_output_min) /
+                                     (modified_output_max - modified_output_min), gamma_t1)
+
+            modified_output = modified_output * (modified_output_max - modified_output_min) + modified_output_min
+
+        return modified_output
+
+    def compute_output_shape(self, input_shape):
+        return input_shape  # Output shape is same as input shape
+
+    def call(self, inputs, *args, **kwargs):
+        return self.__augment__(inputs)
 class DTIFitLayer(Layer):
 
     def __init__(self, bvals, bvecs, *args, **kwargs):
