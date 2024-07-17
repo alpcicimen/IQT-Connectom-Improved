@@ -127,6 +127,49 @@ class AugmentationLayer(Layer):
 
     def call(self, inputs, *args, **kwargs):
         return self.__augment__(inputs)
+
+
+class MinMaxNormLayer(Layer):
+
+    def __init__(self, predet_min=None, predet_max=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.predet_min = predet_min
+        self.predet_max = predet_max
+
+    @staticmethod
+    def __normalize__(inputs):
+
+        # min_input = tf.reshape(inputs[2], [-1, 1, 1, 1, 1])
+        # max_input = tf.reshape(inputs[3], [-1, 1, 1, 1, 1])
+
+        normed_inputs = tf.divide(tf.subtract(inputs[0], inputs[2]),
+                                  tf.subtract(inputs[3], inputs[2]))
+
+        normed_inputs = tf.multiply(normed_inputs, inputs[1])
+
+        normed_inputs = tf.clip_by_value(normed_inputs, 0., 1.)
+
+        return normed_inputs
+
+    def call(self, inputs, *args, **kwargs):
+
+        # func = tf.switch_case(self.clip_mode, branch_fns={'constant': self.norm_constant,
+        #                                                   'percentile': self.percentile,
+        #                                                   'minmax': self.norm_minmax}, default=self.norm_minmax)
+
+        if self.predet_min is not None:
+            min_values = tf.convert_to_tensor(self.predet_min)
+        else:
+            min_values = tf.reshape(inputs[2][:, 0, None], [-1, 1, 1, 1, 1])
+        if self.predet_max is not None:
+            max_values = tf.convert_to_tensor(self.predet_max)
+        else:
+            max_values = tf.reshape(inputs[2][:, 1, None], [-1, 1, 1, 1, 1])
+
+        return self.__normalize__([inputs[0], inputs[1], min_values, max_values])
+
+
 class DTIFitLayer(Layer):
 
     def __init__(self, bvals, bvecs, *args, **kwargs):
