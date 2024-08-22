@@ -1,4 +1,4 @@
-from typing import Tuple, Any, Sequence
+from typing import Any, Sequence, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -21,6 +21,14 @@ def __load_nii__(directory: str | os.PathLike[str], filename: str) -> Nifti1Imag
     else:
         raise FileNotFoundError("No such files in directory: \'{}\'"
                                 .format(os.path.join(directory, f"{filename}.nii")))
+
+
+def load_dwis(directory: str | os.PathLike[str],
+              file_head: str) -> Tuple[NDArray[Any], Nifti1Header | Nifti2Header]:
+
+    dwi_file = __load_nii__(directory, file_head)
+
+    return np.array(dwi_file.dataobj), dwi_file.header
 
 
 def load_dtis(directory: str | os.PathLike[str],
