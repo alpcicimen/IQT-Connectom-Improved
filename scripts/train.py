@@ -103,8 +103,8 @@ def main(model_type,
 
     time_start = 0
     model = config_model(model_type,
-                         patch_size=patch_size[0],
-                         t1_patch_size=patch_size[1] if len(patch_size) > 1 else patch_size[0])
+                         target_patch_size=patch_size[0])
+                         # t1_patch_size=patch_size[1] if len(patch_size) > 1 else patch_size[0])
 
     loss_best = tf.float32.max
 

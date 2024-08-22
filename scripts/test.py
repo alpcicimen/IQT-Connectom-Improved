@@ -57,7 +57,7 @@ def main(model_type,
     model = config_model(model_type,
                          patch_size,
                          patch_size,
-                         model_weights_dir)
+                         weights_dir=model_weights_dir)
 
     df = []
 
@@ -110,7 +110,8 @@ def main(model_type,
 
         nib.save(t1_rescaled_nii, os.path.join(output_dir, f"{subj_id}_T1_resc"))
 
-        test_data_rescaled = util.apply_gaussian_filter(test_data, upsamp_rate)
+        if upsamp_rate > 1.:
+            test_data_rescaled = util.apply_gaussian_filter(test_data, upsamp_rate)
 
         test_data_rescaled = zoom(test_data_rescaled,
                                   (1/upsamp_rate, 1/upsamp_rate, 1/upsamp_rate, 1),
