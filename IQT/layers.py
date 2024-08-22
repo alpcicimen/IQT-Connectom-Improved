@@ -266,7 +266,6 @@ class SamplingLayer(Layer):
 
         return result
 
-    @tf.function(reduce_retracing=True)
     def __config_grid__(self, input_shape):
 
         dim_0 = tf.cast(tf.round(
