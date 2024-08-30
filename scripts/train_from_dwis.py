@@ -58,7 +58,7 @@ def train_step(dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metri
     with tf.GradientTape() as tape:
         model_output = model([dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric], training=True)
 
-        loss = loss_fn(model_output[0], model_output[1])
+        loss = loss_fn(model_output[0], model_output[2])
 
     grads = tape.gradient(loss, model.trainable_weights)
 
@@ -71,7 +71,7 @@ def train_step(dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metri
 def val_step(dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric):
     model_output = model([dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric], training=False)
 
-    return loss_fn(model_output[0], model_output[1])
+    return loss_fn(model_output[0], model_output[2])
 
 
 def main(model_type,
