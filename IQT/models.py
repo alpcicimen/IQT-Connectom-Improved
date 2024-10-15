@@ -92,10 +92,10 @@ def config_model(model_type,
             model = [unet3d_pre_fusion_v2(lr_patch, t1_patch)]
 
         case "UNet":
-            model = [unet3d_not1_v2(target_patch_size)]
+            model = [unet3d_not1_v2(lr_patch)]
 
         case "UNet-Attention":
-            model = [unet3d_t1_attention(target_patch_size, target_patch_size)]
+            model = [unet3d_t1_attention(lr_patch, t1_patch)]
 
         case "Identity":
             model = [lr_patch]

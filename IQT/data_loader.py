@@ -82,7 +82,9 @@ class DWISequence(keras.utils.Sequence):
                  bvecs_file="bvecs",
                  bval_limit=1200.,
                  t1_subdir='T1w',
-                 t1_filename='T1w_acpc_dc_restore_brain'):
+                 t1_filename='T1w_acpc_dc_restore_brain',
+                 b0_norm=False,
+                 b0_limit=100):
 
         self.subject_labels = subject_labels
         self.batch_size = batch_size
@@ -132,8 +134,8 @@ class DWISequence(keras.utils.Sequence):
                     t1_filename
                 )
 
-                mask = np.array(util.load_nii(os.path.join(diff_data_dir, subject_label, dwis_subdir),
-                                              mask_filename).dataobj) > 0
+                mask = np.array(util.__load_nii__(os.path.join(diff_data_dir, subject_label, dwis_subdir),
+                                                  mask_filename).dataobj) > 0
 
                 mask = binary_erosion(mask, morphology.ball(2), iterations=2)
 
@@ -200,6 +202,11 @@ class DWISequence(keras.utils.Sequence):
                 mask = np.pad(mask, pad_width=np.array([[mask_patch_size // 2, mask_patch_size // 2],
                                                         [mask_patch_size // 2, mask_patch_size // 2],
                                                         [mask_patch_size // 2, mask_patch_size // 2]]), mode='edge')
+
+                if b0_norm:
+                    valid_dwis /= (np.mean(valid_dwis[..., (valid_bvals < b0_limit)[:, 0]],
+                                           axis=-1,
+                                           keepdims=True) + 1e-10)
 
                 sel_mask_indices = np.zeros(mask.shape, dtype=bool)
 

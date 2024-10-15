@@ -241,6 +241,249 @@ class DTIFitLayer(Layer):
         return self.__fit__(inputs[0], inputs[1], inputs[2])
 
 
+class MAPMRIFitLayer(Layer):
+
+    __herm_coefs = {0: [[0, 0, 0]],
+                    # 1: [[1, 0, 0],  # Unnecessary as only even hermitian order coefficients are needed
+                    #     [0, 1, 0],
+                    #     [0, 0, 1]],
+                    2: [[2, 0, 0],
+                        [1, 1, 0],
+                        [1, 0, 1],
+                        [0, 2, 0],
+                        [0, 1, 1],
+                        [0, 0, 2]],
+                    # 3: [[3, 0, 0],
+                    #     [2, 1, 0],
+                    #     [2, 0, 1],
+                    #     [1, 1, 1],
+                    #     [1, 0, 2],
+                    #     [0, 3, 0],
+                    #     [0, 2, 1],
+                    #     [0, 1, 2],
+                    #     [0, 0, 3],],
+                    4: [[4, 0, 0],
+                        [3, 1, 0],
+                        [3, 0, 1],
+                        [2, 2, 0],
+                        [2, 1, 1],
+                        [2, 0, 2],
+                        [1, 3, 0],
+                        [1, 2, 1],
+                        [1, 1, 2],
+                        [1, 0, 3],
+                        [0, 4, 0],
+                        [0, 3, 1],
+                        [0, 2, 2],
+                        [0, 1, 3],
+                        [0, 0, 4]],
+                    # 5: [[5, 0, 0],
+                    #     [4, 1, 0],
+                    #     [4, 0, 1],
+                    #     [3, 2, 0],
+                    #     [3, 1, 1],
+                    #     [3, 0, 2],
+                    #     [2, 3, 0],
+                    #     [2, 2, 1],
+                    #     [2, 1, 2],
+                    #     [2, 0, 3],
+                    #     [1, 4, 0],
+                    #     [1, 3, 1],
+                    #     [1, 2, 2],
+                    #     [1, 1, 3],
+                    #     [1, 0, 4],
+                    #     [0, 5, 0],
+                    #     [0, 4, 1],
+                    #     [0, 3, 2],
+                    #     [0, 2, 3],
+                    #     [0, 1, 4],
+                    #     [0, 0, 5]],
+                    6: [[6, 0, 0],
+                        [5, 1, 0],
+                        [5, 0, 1],
+                        [4, 2, 0],
+                        [4, 1, 1],
+                        [4, 0, 2],
+                        [3, 3, 0],
+                        [3, 2, 1],
+                        [3, 1, 2],
+                        [3, 0, 3],
+                        [2, 4, 0],
+                        [2, 3, 1],
+                        [2, 2, 2],
+                        [2, 1, 3],
+                        [2, 0, 4],
+                        [1, 5, 0],
+                        [1, 4, 1],
+                        [1, 3, 2],
+                        [1, 2, 3],
+                        [1, 1, 4],
+                        [1, 0, 5],
+                        [0, 6, 0],
+                        [0, 5, 1],
+                        [0, 4, 2],
+                        [0, 3, 3],
+                        [0, 2, 4],
+                        [0, 1, 5],
+                        [0, 0, 6]]
+                    }
+
+    @staticmethod
+    # @tf.function
+    def hermite_basis(n, u, x):
+        # tf.linalg.matmul(q_batch[..., 0, None], pqr_batch[:, None, ..., 0])
+        # h = tf.linalg.matmul(n, x) * tf.constant([2.0 * np.pi], dtype=x.dtype) * u
+        # h = tf.constant([2.0 * np.pi], dtype=x.dtype) * u
+        h = tf.repeat(tf.constant([2.0 * np.pi], dtype=x.dtype) * u * x, tf.shape(n)[1], axis=1)
+
+        hh = tf.ones(tf.shape(h))
+        nn = tf.ones(tf.shape(h))
+
+        hh = tf.where(n == 1, 2.0 * h, hh)
+        hh = tf.where(n == 2, 4.0 * tf.pow(h, 2.0) - 2.0, hh)
+        hh = tf.where(n == 3, 8.0 * tf.pow(h, 3.0) - 12.0 * h, hh)
+        hh = tf.where(n == 4, 16.0 * tf.pow(h, 4.0) - 48.0 * tf.pow(h, 2.0) + 12.0, hh)
+        hh = tf.where(n == 5, 32.0 * tf.pow(h, 5.0) - 160.0 * tf.pow(h, 3.0) + 120.0 * h, hh)
+        hh = tf.where(n == 6, 64.0 * tf.pow(h, 6.0) - 480.0 * tf.pow(h, 4.0) + 720.0 * tf.pow(h, 2.0) - 120.0, hh)
+
+        nn = tf.where(n == 1, tf.sqrt(2.), nn)
+        nn = tf.where(n == 2, tf.sqrt(8.), nn)
+        nn = tf.where(n == 3, tf.sqrt(48.), nn)
+        nn = tf.where(n == 4, tf.sqrt(384.), nn)
+        nn = tf.where(n == 5, tf.sqrt(3840.), nn)
+        nn = tf.where(n == 6, tf.sqrt(46080.), nn)
+
+        # k = (tf.pow(tf.complex(tf.zeros(h.shape), tf.ones(h.shape)), -tf.complex(n, tf.zeros(n.shape))) /
+        #      tf.complex(nn, tf.zeros(nn.shape)))
+        #
+        # phr = tf.exp(-tf.square(h) / 2.0) * hh
+        #
+        # phi = k * tf.complex(phr, tf.zeros(phr.shape))
+
+        return tf.math.divide(tf.math.multiply(tf.exp(-tf.square(h)/2.0), hh), nn)
+
+    @staticmethod
+    def hermite_basis_complex(n, u, x):
+        h = tf.repeat(tf.constant([2.0 * np.pi], dtype=x.dtype) * u * x, tf.shape(n)[1], axis=1)
+
+        hh = tf.ones(tf.shape(h))
+        nn = tf.ones(tf.shape(h))
+
+        hh = tf.where(n == 1, 2.0 * h, hh)
+        hh = tf.where(n == 2, 4.0 * tf.pow(h, 2.0) - 2.0, hh)
+        hh = tf.where(n == 3, 8.0 * tf.pow(h, 3.0) - 12.0 * h, hh)
+        hh = tf.where(n == 4, 16.0 * tf.pow(h, 4.0) - 48.0 * tf.pow(h, 2.0) + 12.0, hh)
+        hh = tf.where(n == 5, 32.0 * tf.pow(h, 5.0) - 160.0 * tf.pow(h, 3.0) + 120.0 * h, hh)
+        hh = tf.where(n == 6, 64.0 * tf.pow(h, 6.0) - 480.0 * tf.pow(h, 4.0) + 720.0 * tf.pow(h, 2.0) - 120.0, hh)
+
+        nn = tf.where(n == 1, tf.sqrt(2.), nn)
+        nn = tf.where(n == 2, tf.sqrt(8.), nn)
+        nn = tf.where(n == 3, tf.sqrt(48.), nn)
+        nn = tf.where(n == 4, tf.sqrt(384.), nn)
+        nn = tf.where(n == 5, tf.sqrt(3840.), nn)
+        nn = tf.where(n == 6, tf.sqrt(46080.), nn)
+
+        # k = (tf.pow(tf.complex(tf.zeros(h.shape), tf.ones(h.shape)), -tf.complex(n, tf.zeros(n.shape))) /
+        #      tf.complex(nn, tf.zeros(nn.shape)))
+        #
+        # phr = tf.exp(-tf.square(h) / 2.0) * hh
+        #
+        # phi = k * tf.complex(phr, tf.zeros(phr.shape))
+
+        return tf.math.divide(tf.math.multiply(tf.exp(-tf.square(h)/2.0), hh), nn)
+
+    def map_basis(self, u, x):
+
+        batch_len = tf.shape(x)[0]
+
+        return (self.hermite_basis(tf.repeat(self.pqr[None, ..., 0, None],
+                                             batch_len, axis=0), u, x[..., 0][:, None, :]) *
+                self.hermite_basis(tf.repeat(self.pqr[None, ..., 1, None],
+                                             batch_len, axis=0), u, x[..., 1][:, None, :]) *
+                self.hermite_basis(tf.repeat(self.pqr[None, ..., 2, None],
+                                             batch_len, axis=0), u, x[..., 2][:, None, :]))
+
+    # Difftime (0.024 - 0.007 / 3) for Cardiff Data
+    def __init__(self, acquisition_length, herm_order, difftime=(0.0431 - 0.0106/3), *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.input_dims = None
+        self.reshape1 = None
+        self.reshape2 = None
+        self.permute = None
+
+        self.acq_len = acquisition_length
+        # Determine the maximum (even) hermitian order to use. Odd values are rounded down.
+        self.h_order = (herm_order // 2) * 2
+        self.difftime = difftime
+
+        pqr = []
+
+        for order in np.arange(0, self.h_order + 1, 2):
+            pqr += self.__herm_coefs[order]
+
+        self.__output_dims = len(pqr)
+
+        self.pqr = tf.cast(tf.stack(pqr, axis=0), dtype=self.dtype)
+
+    def build(self, input_shape):
+        assert (input_shape[0][-1],
+                input_shape[1][1],
+                input_shape[2][1]) == (self.acq_len,
+                                       self.acq_len,
+                                       self.acq_len), "Acquisition length must match the input length!"
+
+        self.input_dims = input_shape[0][1:-1]
+        self.reshape1 = Reshape(target_shape=(self.input_dims[0] * self.input_dims[1] * self.input_dims[2],
+                                              self.acq_len))
+        self.reshape1.build(input_shape)
+
+        self.reshape2 = Reshape(target_shape=(self.input_dims[0], self.input_dims[1], self.input_dims[2],
+                                              self.__output_dims))
+        self.reshape2.build(input_shape)
+
+        self.permute = Permute((2, 1))
+
+        return super().build(input_shape)
+
+    def compute_output_shape(self, input_shape):
+        return input_shape[:-1] + self.__output_dims
+
+    def qmat(self, bvals, bvecs):
+
+        q = tf.sqrt(bvals / self.difftime) * bvecs
+
+        return q
+
+    def call(self, inputs, *args, **kwargs):
+
+        dwis = inputs[0]
+
+        grads = None if len(inputs) <= 2 else inputs[3]
+
+        qmat = self.qmat(inputs[1], inputs[2])
+
+        map_basis = self.permute(self.map_basis(1.2e-3, qmat))
+
+        y = self.reshape1(dwis)
+
+        # b0_indices = tf.where(inputs[1] < self.b0_limit)[..., :2]
+        #
+        # b0_mean = tf.reduce_mean(tf.reshape(tf.gather_nd(self.permute(y), b0_indices),
+        #                                     [batch_len[0],
+        #                                      tf.cast(b0_indices.shape[0]/batch_len, batch_len.dtype)[0],
+        #                                      tf.shape(y)[1]]), axis=1, keepdims=True)
+        #
+        # y = y / (self.permute(b0_mean) + 1e-7)
+
+        b = self.permute(tf.linalg.lstsq(map_basis, self.permute(y)))
+
+        out_tensor = self.reshape2(b)
+        out_tensor = tf.where(tf.math.is_nan(out_tensor), tf.zeros_like(out_tensor), out_tensor)
+
+        return out_tensor
+
+
 class SamplingLayer(Layer):
 
     @staticmethod
@@ -627,39 +870,6 @@ class DynamicSamplingLayer(Layer):
             outputs.append(inputs_mask)
 
         return outputs
-
-
-if __name__ == '__main__':
-
-    input_layer = Input((34, 34, 34, 30))
-
-    input_layer_bvals = Input((30, 1))
-    input_layer_bvecs = Input((30, 3))
-
-    resamp_layer = DynamicSamplingLayer(2, 3)
-    # dti_layer = DTIFitLayer(acquisition_length=30)
-
-    # output_layer_lr, output_layer_hr = resamp_layer([input_layer])
-
-    # output_layer_lr = dti_layer([output_layer_lr, input_layer_bvals, input_layer_bvecs])
-    # output_layer_hr = dti_layer([output_layer_hr, input_layer_bvals, input_layer_bvecs])
-    #
-    # model = keras.Model([input_layer, input_layer_bvals, input_layer_bvecs], [output_layer_hr, output_layer_lr])
-    #
-    # result = model([tf.random.uniform((6, 34, 34, 34, 30)),
-    #                 tf.random.uniform((6, 30, 1)),
-    #                 tf.random.uniform((6, 30, 3))])
-
-    # LR: tf.Tensor(2.0559907, shape=(), dtype=float32)
-    # tf.Tensor([40  0  0  0 31], shape=(5,), dtype=int32)
-    # HR: tf.Tensor(1.986511, shape=(), dtype=float32)
-    # tf.Tensor([40  0  0  0 31], shape=(5,), dtype=int32)
-
-    lr_tensor, hr_tensor = resamp_layer([tf.ones((1, 40, 40, 40, 6)),
-                                         tf.ones((1, 36, 36, 36, 6)),
-                                         tf.ones((1, 32, 32, 32, 6))])
-
-    pass
 
 
 def unet_downsample_layer(prev_layer,
