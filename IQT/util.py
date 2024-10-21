@@ -209,7 +209,6 @@ def apply_normalization_combined(tensors, mask: NDArray[bool],
                 # Clip to account for unmasked voxels
                 tensors[..., c] = np.clip(tensors[..., c], 0, 1)
 
-
         case "stdscore":
             for i, c in sel_channels:
                 norm_metrics[i, :] = np.array([np.mean(tensors[..., c][mask]),
@@ -313,7 +312,6 @@ def get_clip_values(tensors, mask, data_mode, clip_strategy, value: float = 3e-3
             return np.array([np.min(tensors), np.max(tensors)])
 
 
-@DeprecationWarning
 def apply_clipped_normalization(tensors,
                                 mask,
                                 method=None,
@@ -377,6 +375,8 @@ def apply_gaussian_filter(input: NDArray[float], downsample_rate) -> NDArray[flo
     gaussian_kernel = 1/(np.sqrt(2*np.pi)*std_value)**3 * np.exp(-(kernel_grid[..., 0] ** 2 +
                                                                    kernel_grid[..., 1] ** 2 +
                                                                    kernel_grid[..., 2] ** 2) / (2 * std_value ** 2))
+
+    gaussian_kernel /= np.sum(gaussian_kernel)
 
     if len(input.shape) == 3:
         return convolve(input, gaussian_kernel, mode='constant')

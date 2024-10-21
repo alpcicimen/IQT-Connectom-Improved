@@ -37,6 +37,7 @@ class PairSequence(keras.utils.Sequence):
                       patch_spacing=8,
                       patch_size=16,
                       mask_erosion=0,
+                      random_shift=True,
                       apply_blurring=True,
                       cluster_mode=False) -> None:
         """
@@ -64,6 +65,9 @@ class PairSequence(keras.utils.Sequence):
             patch_spacing: The spacing between valid patches. Spacing == patch size guarantees no overlap.
             patch_size: The patch size for the model. Odd numbered patches have a central voxel.
             mask_erosion: The value for which the mask will be eroded for. Default value 0 means no erosion.
+            random_shift: Boolean condition that determines whether the patch spacing is randomly shifted one way.
+                This is so that the model does not inherently learn the general shape of the selected patches.
+                Default = True
             apply_blurring: Condition that determines whether the model has blurring applied pre-downsampling.
                 Default - True
             cluster_mode: argument that suppresses tqdm outputs (use if you're running this on the cluster)
@@ -115,13 +119,17 @@ class PairSequence(keras.utils.Sequence):
 
             t1_downsample_rate = np.array(subject_data_t1.shape[:-1]) / np.array(subject_data_hr.shape[:-1])
 
-            mask = np.array(subject_data_hr[..., 0] >= 0, dtype=bool)
+            mask = subject_data_hr[..., 0]
 
-            mask_t1 = np.array(zoom(subject_data_hr[..., 0],
-                                    zoom=(t1_downsample_rate[0],
-                                          t1_downsample_rate[1],
-                                          t1_downsample_rate[2]),
-                                    order=1, prefilter=False) >= 0, dtype=bool)
+            if hr_downsampling_rate > 1.:
+                mask = zoom(mask,
+                            zoom=(1. / hr_downsampling_rate,
+                                  1. / hr_downsampling_rate,
+                                  1. / hr_downsampling_rate),
+                            order=1,
+                            prefilter=False)
+
+            mask = np.array(mask >= 0, dtype=bool)
 
             subject_data_hr = subject_data_hr[..., 2:]
 
@@ -129,7 +137,6 @@ class PairSequence(keras.utils.Sequence):
             # Therefore, we just erode them further.
             if mask_erosion:
                 mask = binary_erosion(mask, np.ones((mask_erosion, mask_erosion, mask_erosion)))
-                # mask_t1 = binary_erosion(mask_t1, np.ones((mask_erosion//2, mask_erosion//2, mask_erosion//2)))
 
 ########################################################################################################################
 
@@ -181,20 +188,22 @@ class PairSequence(keras.utils.Sequence):
             t1_values = util.get_clip_values(subject_data_t1, mask,
                                              data_mode='t1w',
                                              clip_strategy='percentile',
-                                             value=99)
-
-            values = util.get_clip_values(subject_data_hr, mask, mode, clip_strategy, clip_value)
+                                             value=96)
 
             # Normalize at low-resolution space before applying linear interpolation to target resolution.
             # This is so that we properly simulate our input.
             util.apply_normalization_combined(subject_data_lr, mask,
                                               method=normalization_method,
                                               channels=norm_channels,
-                                              values=values)
+                                              values=util.get_clip_values(
+                                                  subject_data_lr, mask, mode, clip_strategy, clip_value
+                                              ))
             util.apply_normalization_combined(subject_data_hr, mask,
                                               method=normalization_method,
                                               channels=norm_channels,
-                                              values=values)
+                                              values=util.get_clip_values(
+                                                  subject_data_hr, mask, mode, clip_strategy, clip_value
+                                              ))
             util.apply_normalization_combined(subject_data_t1, mask,
                                               method=normalization_method,
                                               values=t1_values)
@@ -233,9 +242,13 @@ class PairSequence(keras.utils.Sequence):
 
             sel_mask_indices = np.zeros(mask.shape, dtype=bool)
 
-            sel_mask_indices[randint(0, patch_spacing // 4)::patch_spacing,
-                             randint(0, patch_spacing // 4)::patch_spacing,
-                             randint(0, patch_spacing // 4)::patch_spacing] = True
+            randshift = (randint(0, patch_spacing // 4),
+                         randint(0, patch_spacing // 4),
+                         randint(0, patch_spacing // 4)) if random_shift else (0, 0, 0)
+
+            sel_mask_indices[randshift[0]::patch_spacing,
+                             randshift[1]::patch_spacing,
+                             randshift[2]::patch_spacing] = True
 
             sel_mask_indices = np.array(np.where(sel_mask_indices & mask)).T
 
@@ -293,8 +306,6 @@ class PairSequence(keras.utils.Sequence):
         self.brightness_std = brightness_std
         self.max_noise_std = max_noise_std
 
-        self.__total_patches = len(self.subject_labels) * self.pairs_per_subject
-
         self.__run_indices = self.__get_indices__()
 
         pass
@@ -310,10 +321,18 @@ class PairSequence(keras.utils.Sequence):
 
         run_indices = []
 
+        self.__total_patches = 0
+
         for subj in self.subject_labels:
-            patch_indices: np.ndarray[str] = np.stack((np.repeat(subj, self.pairs_per_subject),
+
+            subj_pairs = len(os.listdir(os.path.join(self.pair_dir, subj))) \
+                if self.pairs_per_subject is None else self.pairs_per_subject
+
+            self.__total_patches += subj_pairs
+
+            patch_indices: np.ndarray[str] = np.stack((np.repeat(subj, subj_pairs),
                                                        choices(os.listdir(os.path.join(self.pair_dir, subj)),
-                                                               k=self.pairs_per_subject)), dtype=str, axis=-1)
+                                                               k=subj_pairs)), dtype=str, axis=-1)
 
             run_indices.append(patch_indices)
 
@@ -322,6 +341,14 @@ class PairSequence(keras.utils.Sequence):
         npr.shuffle(run_indices)
 
         return run_indices
+
+    def __augment_dti__(self, input_dti):
+
+        noise_std = self.max_noise_std * np.random.rand(1)[0]
+
+        noise = noise_std * np.random.randn(*input_dti.shape[:-1])[..., None]
+
+        return np.clip(input_dti + noise, a_min=0, a_max=1)
 
     def __augment_t1__(self, input_t1):
 
