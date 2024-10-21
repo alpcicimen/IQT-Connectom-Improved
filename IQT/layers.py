@@ -243,16 +243,16 @@ class DTIFitLayer(Layer):
 
 class MAPMRIFitLayer(Layer):
 
-    __herm_coefs = {0: [[0, 0, 0]],
+    __herm_coefs = {0: [[0, 0, 0]],  # 1
                     # 1: [[1, 0, 0],  # Unnecessary as only even hermitian order coefficients are needed
                     #     [0, 1, 0],
                     #     [0, 0, 1]],
-                    2: [[2, 0, 0],
-                        [1, 1, 0],
-                        [1, 0, 1],
-                        [0, 2, 0],
-                        [0, 1, 1],
-                        [0, 0, 2]],
+                    2: [[2, 0, 0],  # 2
+                        [1, 1, 0],  # 3
+                        [1, 0, 1],  # 4
+                        [0, 2, 0],  # 5
+                        [0, 1, 1],  # 6
+                        [0, 0, 2]],  # 7
                     # 3: [[3, 0, 0],
                     #     [2, 1, 0],
                     #     [2, 0, 1],
@@ -383,13 +383,6 @@ class MAPMRIFitLayer(Layer):
         nn = tf.where(n == 5, tf.sqrt(3840.), nn)
         nn = tf.where(n == 6, tf.sqrt(46080.), nn)
 
-        # k = (tf.pow(tf.complex(tf.zeros(h.shape), tf.ones(h.shape)), -tf.complex(n, tf.zeros(n.shape))) /
-        #      tf.complex(nn, tf.zeros(nn.shape)))
-        #
-        # phr = tf.exp(-tf.square(h) / 2.0) * hh
-        #
-        # phi = k * tf.complex(phr, tf.zeros(phr.shape))
-
         return tf.math.divide(tf.math.multiply(tf.exp(-tf.square(h)/2.0), hh), nn)
 
     def map_basis(self, u, x):
@@ -458,8 +451,6 @@ class MAPMRIFitLayer(Layer):
     def call(self, inputs, *args, **kwargs):
 
         dwis = inputs[0]
-
-        grads = None if len(inputs) <= 2 else inputs[3]
 
         qmat = self.qmat(inputs[1], inputs[2])
 
