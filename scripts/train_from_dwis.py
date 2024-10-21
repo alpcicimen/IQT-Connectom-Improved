@@ -54,9 +54,15 @@ def l2_loss_fn(output: tf.Tensor, target: tf.Tensor):
 
 
 # @tf.function
-def train_step(dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric):
+def train_step(dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric, dwi_metric=None):
+
+    model_input = [dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric]
+
+    if dwi_metric is not None:
+        model_input += [dwi_metric]
+
     with tf.GradientTape() as tape:
-        model_output = model([dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric], training=True)
+        model_output = model(model_input, training=True)
 
         loss = loss_fn(model_output[0], model_output[2])
 
@@ -68,13 +74,19 @@ def train_step(dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metri
 
 
 # @tf.function
-def val_step(dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric):
-    model_output = model([dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric], training=False)
+def val_step(dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric, dwi_metric=None):
+
+    model_input = [dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric]
+    if dwi_metric is not None:
+        model_input += [dwi_metric]
+
+    model_output = model(model_input, training=False)
 
     return loss_fn(model_output[0], model_output[2])
 
 
 def main(model_type,
+         diffusion_model: Literal['dti', 'map'],
          patch_size,
          patch_spacing,
          pairs_per_subject,
@@ -92,6 +104,7 @@ def main(model_type,
          dwi_file_head,
          t1_subdir,
          t1_file_head,
+         map_metric_dir,
          cluster_mode,
          batch_size,
          lr,
@@ -105,8 +118,10 @@ def main(model_type,
     model = config_model(model_type,
                          target_patch_size=patch_size,
                          downsamp_rates=[hr_downsampling_max_rate, lr_downsampling_max_rate, t1_dwi_rate],
-                         diff_channel_size=108,
-                         train_preprocessors=["dynamic_rescale", "dti", "normalize"])
+                         diff_channel_size=108 if diffusion_model == 'dti' else 288,
+                         train_preprocessors=["dynamic_rescale",
+                                              diffusion_model,
+                                              f"normalize_{diffusion_model}"])
 
     loss_best = tf.float32.max
 
@@ -137,7 +152,10 @@ def main(model_type,
                             dwis_subdir=dwi_subdir,
                             dwis_filename=dwi_file_head,
                             t1_subdir=t1_subdir,
-                            t1_filename=t1_file_head)
+                            t1_filename=t1_file_head,
+                            bval_limit=1200.0 if (model_type == "dti") else 10000.0,  # This will include every acq
+                            b0_norm=(model_type != "dti"),
+                            map_metric_dir=map_metric_dir)
 
     if make_dataset:
         print("Generating validation subjects...")
@@ -157,7 +175,10 @@ def main(model_type,
                                  dwis_subdir=dwi_subdir,
                                  dwis_filename=dwi_file_head,
                                  t1_subdir=t1_subdir,
-                                 t1_filename=t1_file_head)
+                                 t1_filename=t1_file_head,
+                                 bval_limit=1200.0 if (model_type == "dti") else 10000.0,  # This will include every acq
+                                 b0_norm=(model_type != "dti"),
+                                 map_metric_dir=map_metric_dir)
 
     if make_dataset:
         print("Generated patch triplets.")
@@ -186,16 +207,34 @@ def main(model_type,
         if cluster_mode:
             time_start = time.time()
 
-        for (dwi_batch, t1_batch, mask_patch,
-             bval_batch, bvec_batch, t1_metric_batch) in tqdm(train_seq, disable=cluster_mode):
+        for train_batch in tqdm(train_seq, disable=cluster_mode):
 
-            closs = train_step(dwi_batch, t1_batch, mask_patch, bval_batch, bvec_batch, t1_metric_batch)
+            (dwi_batch, t1_batch, mask_batch,  # Image data
+             bval_batch, bvec_batch,  # dMRI gradient data
+             t1_metric_batch) = (train_batch[0], train_batch[1], train_batch[2],  # T1w metric data
+                                 train_batch[3], train_batch[4],
+                                 train_batch[5])
+
+            dwi_metric_batch = None if model_type == 'dti' else train_batch[6]  # Add dMRI recon model metric data
+
+            closs = train_step(dwi_batch, t1_batch, mask_batch,
+                               bval_batch, bvec_batch,
+                               t1_metric_batch, dwi_metric_batch)
             train_loss += closs
 
-        for (dwi_batch, t1_batch, mask_patch,
-             bval_batch, bvec_batch, t1_metric_batch) in tqdm(validation_seq, disable=cluster_mode):
+        for val_batch in tqdm(validation_seq, disable=cluster_mode):
 
-            val_loss += val_step(dwi_batch, t1_batch, mask_patch, bval_batch, bvec_batch, t1_metric_batch)
+            (dwi_batch, t1_batch, mask_batch,  # Image data
+             bval_batch, bvec_batch,  # dMRI gradient data
+             t1_metric_batch) = (val_batch[0], val_batch[1], val_batch[2],  # T1w metric data
+                                 val_batch[3], val_batch[4],
+                                 val_batch[5])
+
+            dwi_metric_batch = None if model_type == 'dti' else val_batch[6]
+
+            val_loss += val_step(dwi_batch, t1_batch, mask_batch,
+                                 bval_batch, bvec_batch,
+                                 t1_metric_batch, dwi_metric_batch)
 
         if cluster_mode:
             print("Time taken for run {}: {} seconds.".format((run + 1), time.time() - time_start))
@@ -254,6 +293,9 @@ if __name__ == '__main__':
 
     # ----------------------------------------------- I/O Arguments ----------------------------------------------------
 
+    parser.add_argument('--diffusion_model', type=str, default='dti',
+                        help='The diffusion reconstruction model to use. Options: [dti, map]. Default: dti')
+
     parser.add_argument('--cluster_mode', type=bool, default=False,
                         help='Determines whether tqdm will be silent (to reduce file size)')
 
@@ -274,6 +316,9 @@ if __name__ == '__main__':
                         default='T1w')
     parser.add_argument('--t1_file_head',
                         default='T1w_acpc_dc_restore_brain')
+
+    parser.add_argument('--map_metric_dir', default=None,
+                        help='The directory where MAP-MRI metrics are stored. Unused if model is not MAP-MRI.')
 
 ########################################################################################################################
 
