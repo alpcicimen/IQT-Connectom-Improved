@@ -84,7 +84,8 @@ class DWISequence(keras.utils.Sequence):
                  t1_subdir='T1w',
                  t1_filename='T1w_acpc_dc_restore_brain',
                  b0_norm=False,
-                 b0_limit=100):
+                 b0_limit=100,
+                 map_metric_dir: None | os.PathLike = None):
 
         self.subject_labels = subject_labels
         self.batch_size = batch_size
@@ -100,6 +101,11 @@ class DWISequence(keras.utils.Sequence):
         self.all_bvals = []
         self.all_bvecs = []
 
+        if map_metric_dir is not None:
+            self.map_metrics = []
+        else:
+            self.map_metrics = None
+
         for subject_label in subject_labels:
 
             if cluster_mode:
@@ -109,6 +115,12 @@ class DWISequence(keras.utils.Sequence):
             dwi_path = os.path.join(pairs_dir, subject_label, "dwi")
             mask_path = os.path.join(pairs_dir, subject_label, "mask")
             misc_path = os.path.join(pairs_dir, subject_label, "misc")
+
+            if self.map_metrics is not None:
+                map_metric = np.array(pd.read_csv(os.path.join(map_metric_dir, f"{subject_label}.csv"),
+                                                  header=None))[0]
+
+                self.map_metrics.append(map_metric)
 
             if make_dataset:
 
@@ -204,9 +216,10 @@ class DWISequence(keras.utils.Sequence):
                                                         [mask_patch_size // 2, mask_patch_size // 2]]), mode='edge')
 
                 if b0_norm:
-                    valid_dwis /= (np.mean(valid_dwis[..., (valid_bvals < b0_limit)[:, 0]],
-                                           axis=-1,
-                                           keepdims=True) + 1e-10)
+
+                    dwis_mean = np.mean(valid_dwis[..., (valid_bvals < b0_limit)[:, 0]], axis=-1, keepdims=True)
+
+                    valid_dwis /= (dwis_mean + 1e-10)
 
                 sel_mask_indices = np.zeros(mask.shape, dtype=bool)
 
@@ -290,6 +303,9 @@ class DWISequence(keras.utils.Sequence):
         bvec_patches = []
         t1_metrics = []
 
+        if self.map_metrics is not None:
+            map_metrics = []
+
         for (subj, patch_indx) in self.__run_indices[index:min(self.__total_patches, index + self.batch_size)]:
             dwi_patch = np.load(os.path.join(self.pairs_dir, self.subject_labels[int(subj)], "dwi", patch_indx))
             t1_patch = np.load(os.path.join(self.pairs_dir, self.subject_labels[int(subj)], "t1w", patch_indx))
@@ -303,12 +319,20 @@ class DWISequence(keras.utils.Sequence):
             bvec_patches.append(self.all_bvecs[int(subj)])
             t1_metrics.append(self.t1_metrics[int(subj)])
 
-        return (tf.cast(tf.stack(dwi_patches), dtype=tf.float32),
-                tf.cast(tf.stack(t1_patches), dtype=tf.float32),
-                tf.cast(tf.stack(mask_patches), dtype=tf.float32),
-                tf.cast(tf.stack(bval_patches), dtype=tf.float32),
-                tf.cast(tf.stack(bvec_patches), dtype=tf.float32),
-                tf.cast(tf.stack(t1_metrics), dtype=tf.float32))
+            if self.map_metrics is not None:
+                map_metrics.append(self.map_metrics[int(subj)])
+
+        ret = (tf.cast(tf.stack(dwi_patches), dtype=tf.float32),
+               tf.cast(tf.stack(t1_patches), dtype=tf.float32),
+               tf.cast(tf.stack(mask_patches), dtype=tf.float32),
+               tf.cast(tf.stack(bval_patches), dtype=tf.float32),
+               tf.cast(tf.stack(bvec_patches), dtype=tf.float32),
+               tf.cast(tf.stack(t1_metrics), dtype=tf.float32))
+
+        if self.map_metrics is not None:
+            ret += (tf.cast(tf.stack(map_metrics), dtype=tf.float32),)
+
+        return ret
 
 
 class PairSequence(keras.utils.Sequence):
