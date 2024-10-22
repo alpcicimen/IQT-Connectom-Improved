@@ -12,7 +12,7 @@ global model
 global optim
 global loss_fn
 
-make_dataset = False
+make_dataset = True
 
 
 def create_optim(lr,
@@ -118,7 +118,9 @@ def main(model_type,
     model = config_model(model_type,
                          target_patch_size=patch_size,
                          downsamp_rates=[hr_downsampling_max_rate, lr_downsampling_max_rate, t1_dwi_rate],
-                         diff_channel_size=108 if diffusion_model == 'dti' else 288,
+                         diff_channel_size=
+                         108 if diffusion_model == 'dti'
+                         else 288,
                          train_preprocessors=["dynamic_rescale",
                                               diffusion_model,
                                               f"normalize_{diffusion_model}"])
@@ -153,8 +155,9 @@ def main(model_type,
                             dwis_filename=dwi_file_head,
                             t1_subdir=t1_subdir,
                             t1_filename=t1_file_head,
-                            bval_limit=1200.0 if (model_type == "dti") else 10000.0,  # This will include every acq
-                            b0_norm=(model_type != "dti"),
+                            bval_limit=
+                            1200.0 if (diffusion_model == "dti") else 10000.0,  # This will include every acq
+                            b0_norm=(diffusion_model != "dti"),
                             map_metric_dir=map_metric_dir)
 
     if make_dataset:
@@ -176,8 +179,9 @@ def main(model_type,
                                  dwis_filename=dwi_file_head,
                                  t1_subdir=t1_subdir,
                                  t1_filename=t1_file_head,
-                                 bval_limit=1200.0 if (model_type == "dti") else 10000.0,  # This will include every acq
-                                 b0_norm=(model_type != "dti"),
+                                 bval_limit=
+                                 1200.0 if (diffusion_model == "dti") else 10000.0,  # This will include every acq
+                                 b0_norm=(diffusion_model != "dti"),
                                  map_metric_dir=map_metric_dir)
 
     if make_dataset:
@@ -188,12 +192,6 @@ def main(model_type,
     summary_writer = tf.summary.create_file_writer(log_dir)
 
     sample_patch = validation_seq[0]
-
-    # (sample_o, sample_t, sample_t1) = model(sample_patch, training=False)
-    #
-    # with (summary_writer.as_default()):
-    #     tf.summary.image('Target Slice', sample_t[None, 0, :, patch_size//2, :, 0, None], step=0)
-    #     tf.summary.image('Input T1w Slice', sample_t1[None, 0, :, patch_size//2, :, :], step=0)
 
     for run in range(epochs):
 
@@ -215,7 +213,7 @@ def main(model_type,
                                  train_batch[3], train_batch[4],
                                  train_batch[5])
 
-            dwi_metric_batch = None if model_type == 'dti' else train_batch[6]  # Add dMRI recon model metric data
+            dwi_metric_batch = None if diffusion_model == 'dti' else train_batch[6]  # Add dMRI recon model metric data
 
             closs = train_step(dwi_batch, t1_batch, mask_batch,
                                bval_batch, bvec_batch,
@@ -230,7 +228,7 @@ def main(model_type,
                                  val_batch[3], val_batch[4],
                                  val_batch[5])
 
-            dwi_metric_batch = None if model_type == 'dti' else val_batch[6]
+            dwi_metric_batch = None if diffusion_model == 'dti' else val_batch[6]
 
             val_loss += val_step(dwi_batch, t1_batch, mask_batch,
                                  bval_batch, bvec_batch,
