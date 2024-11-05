@@ -38,8 +38,6 @@ def load_dtis(directory: str | os.PathLike[str],
     The files are numbered from 1 to 8, where 1 corresponds to the brain mask, 2 the original image intensity S_0,
     and numbers 3-8 the diffusion tensors D_xx, D_xy, D_xz, D_yy, D_yz, D_zz respectively.
 
-    TODO Move the processing of dwis into python?
-
     :param directory: The parent directory to load the dtis from
     :param file_head: The file header. Files should be of format **header_x** where x is the file numbers 1-8.
         Every file from 1-8 has to be present!

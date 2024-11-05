@@ -1,4 +1,5 @@
 from typing import Tuple, Literal, List
+from collections.abc import Sequence
 
 import keras
 import keras.layers as KL
@@ -10,7 +11,7 @@ from .layers import *
 
 def config_model(model_type,
                  target_patch_size=16,
-                 downsamp_rates=[1.6, 3.0, 1.25 / 0.7],
+                 downsamp_rates: Sequence[float, float, float] = (1.6, 3.0, 1.25 / 0.7),
                  diff_channel_size=6,
                  train_preprocessors: None | List[Literal["dti",
                                                           "map",
@@ -26,7 +27,7 @@ def config_model(model_type,
         kernel_penalty_diff = np.int32(np.ceil(2.5 * downsamp_rates[1]) / 2) * 2
         kernel_penalty_t1 = np.int32(np.ceil(2.5 * downsamp_rates[2] * downsamp_rates[0]) / 2) * 2
 
-        dwi_patch_size = int(np.ceil(target_patch_size * downsamp_rates[0]))+kernel_penalty_diff
+        dwi_patch_size = int(np.ceil(target_patch_size * downsamp_rates[0])) + kernel_penalty_diff
         t1w_patch_size = int(np.round(target_patch_size * downsamp_rates[0] * downsamp_rates[2]) + kernel_penalty_t1)
         mask_patch_size = int(np.ceil(target_patch_size * downsamp_rates[0]))
 
@@ -56,33 +57,36 @@ def config_model(model_type,
             match preproc_step:
 
                 case "dynamic_rescale":
-                    preproc_outputs = DynamicSamplingLayer(max_hr_downsamp=downsamp_rates[0],
-                                                           max_lr_downsamp=downsamp_rates[1],
-                                                           t1_init_downsamp=downsamp_rates[2])([preproc_outputs[0],
-                                                                                                preproc_outputs[2],
-                                                                                                preproc_outputs[3]])
+
+                    dyn_sampling_layer = DynamicSamplingLayer(max_hr_downsamp=downsamp_rates[0],
+                                                              max_lr_downsamp=downsamp_rates[1],
+                                                              t1_init_downsamp=downsamp_rates[2])
+
+                    preproc_outputs = dyn_sampling_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
                 case "dti":
 
-                    diff_recon_ch_size = 6
+                    lr_dti_layer = DTIFitLayer(diff_channel_size)
+                    hr_dti_layer = DTIFitLayer(diff_channel_size)
 
-                    preproc_outputs = [DTIFitLayer(diff_channel_size)([preproc_outputs[0], bvals_input, bvecs_input]),
-                                       DTIFitLayer(diff_channel_size)([preproc_outputs[1], bvals_input, bvecs_input]),
+                    preproc_outputs = [lr_dti_layer([preproc_outputs[0], bvals_input, bvecs_input]),
+                                       hr_dti_layer([preproc_outputs[1], bvals_input, bvecs_input]),
                                        preproc_outputs[2],
                                        preproc_outputs[3]]
+
+                    diff_recon_ch_size = lr_dti_layer.output_shape[-1]
 
                 case "map":
 
-                    diff_recon_ch_size = 22  # Needs to be made dynamic!!!
+                    lr_map_layer = MAPMRIFitLayer(diff_channel_size, herm_order=4)
+                    hr_map_layer = MAPMRIFitLayer(diff_channel_size, herm_order=4)
 
-                    preproc_outputs = [MAPMRIFitLayer(diff_channel_size, herm_order=4)([preproc_outputs[0],
-                                                                                        bvals_input,
-                                                                                        bvecs_input]),
-                                       MAPMRIFitLayer(diff_channel_size, herm_order=4)([preproc_outputs[1],
-                                                                                        bvals_input,
-                                                                                        bvecs_input]),
+                    preproc_outputs = [lr_map_layer([preproc_outputs[0], bvals_input, bvecs_input]),
+                                       hr_map_layer([preproc_outputs[1], bvals_input, bvecs_input]),
                                        preproc_outputs[2],
                                        preproc_outputs[3]]
+
+                    diff_recon_ch_size = lr_map_layer.output_shape[-1]
 
                 case "normalize_dti":
 
@@ -158,6 +162,8 @@ def config_model(model_type,
 
     if weights_dir is not None:
         model.load_weights(weights_dir)
+
+    keras.utils.plot_model(model, show_shapes=True, expand_nested=True)
 
     return model
 

@@ -581,7 +581,8 @@ class SamplingLayer(Layer):
             dtype=self.dtype)
         self.igrid = None
 
-        self.__sampling_function__ = self.__resample_nearest__ if method == 'nearest' else self.__resample_interpolation__
+        self.__sampling_function__ = self.__resample_nearest__ if method == 'nearest' \
+            else self.__resample_interpolation__
 
         self.reshape = None
 
@@ -602,7 +603,7 @@ class DynamicSamplingLayer(Layer):
                  static_lr=False,
                  apply_blurring=True,
                  augment=True, *args, **kwargs):
-        super().__init__(trainable=False, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         assert max_hr_downsamp < max_lr_downsamp, "The value for maximum high-resolution downsampling " + \
                                                   "can not be larger than the low-resolution rate."
@@ -616,7 +617,6 @@ class DynamicSamplingLayer(Layer):
         self.apply_blurring = apply_blurring
         self.augment = augment
 
-        self.blur_layer: List[Conv3D | None] = [None, None, None]
         self.__blur_kernel_max_size = int(np.int32(np.ceil(2.5 * max_lr_downsamp) / 2) * 2 + 1)
         self.__t1_blur_kernel_max_size = int(np.int32(np.ceil(2.5 * t1_init_downsamp * max_hr_downsamp) / 2) * 2 + 1)
 
