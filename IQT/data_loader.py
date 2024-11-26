@@ -249,21 +249,31 @@ class DWISequence(keras.utils.Sequence):
                         if ~mask[i, j, k]:
                             i, j, k = (i_orig, j_orig, k_orig)  # Use original values if new centre voxel is unmasked
 
-                    mask_patch = mask[i-mask_patch_size//2:i+mask_patch_size//2,
-                                      j-mask_patch_size//2:j+mask_patch_size//2,
-                                      k-mask_patch_size//2:k+mask_patch_size//2]
+                    mask_patch = mask[
+                        i - mask_patch_size//2:i + int(np.ceil(mask_patch_size/2)),
+                        j - mask_patch_size//2:j + int(np.ceil(mask_patch_size/2)),
+                        k - mask_patch_size//2:k + int(np.ceil(mask_patch_size/2)),
+                    ]
 
-                    dwis_patch = valid_dwis[i-mask_patch_size//2:i-mask_patch_size//2+dwi_base_patch_size,
-                                            j-mask_patch_size//2:j-mask_patch_size//2+dwi_base_patch_size,
-                                            k-mask_patch_size//2:k-mask_patch_size//2+dwi_base_patch_size, :]
+                    dwis_patch_size = ((dwi_base_patch_size//2 - mask_patch_size//2),
+                                       int(np.ceil((dwi_base_patch_size + mask_patch_size)/2)))
+
+                    dwis_patch = valid_dwis[
+                        i - dwis_patch_size[0]:i + dwis_patch_size[1],
+                        j - dwis_patch_size[0]:j + dwis_patch_size[1],
+                        k - dwis_patch_size[0]:k + dwis_patch_size[1],
+                        :
+                    ]
 
                     i_t1, j_t1, k_t1 = np.array(
                         np.round((np.array([i, j, k])-mask_patch_size//2) * t1_to_diff_ratio) + t1_base_patch_size//2,
                         dtype=int)
 
-                    t1_patch = subject_data_t1_base[i_t1-t1_base_patch_size//2:i_t1+t1_base_patch_size//2,
-                                                    j_t1-t1_base_patch_size//2:j_t1+t1_base_patch_size//2,
-                                                    k_t1-t1_base_patch_size//2:k_t1+t1_base_patch_size//2]
+                    t1_patch = subject_data_t1_base[
+                        i_t1 - t1_base_patch_size//2:i_t1 + int(np.ceil(t1_base_patch_size/2)),
+                        j_t1 - t1_base_patch_size//2:j_t1 + int(np.ceil(t1_base_patch_size/2)),
+                        k_t1 - t1_base_patch_size//2:k_t1 + int(np.ceil(t1_base_patch_size/2)),
+                    ]
 
                     assert t1_patch.shape == (t1_base_patch_size, t1_base_patch_size, t1_base_patch_size, 1)
                     assert mask_patch.shape == (mask_patch_size, mask_patch_size, mask_patch_size)
@@ -282,8 +292,8 @@ class DWISequence(keras.utils.Sequence):
 
                 self.t1_metrics.append(np.load(os.path.join(misc_path, "t1_minmax.npy")))
 
-            if cluster_mode:
-                print(f"Time taken to generate patches: {time.time() - cur_time} seconds")
+        if cluster_mode:
+            print(f"Time taken to generate patches: {time.time() - cur_time} seconds")
 
         self.__run_indices = self.__get_indices__()
         return

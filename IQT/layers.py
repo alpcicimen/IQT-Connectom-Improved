@@ -115,7 +115,7 @@ class AugmentationLayer(Layer):
             modified_output_max = tf.reduce_max(modified_output, axis=[1, 2, 3], keepdims=True)
 
             modified_output = tf.pow((modified_output - modified_output_min) /
-                                     (modified_output_max - modified_output_min), gamma_t1)
+                                     (modified_output_max - modified_output_min + 1e-7), gamma_t1)
 
             modified_output = modified_output * (modified_output_max - modified_output_min) + modified_output_min
 
@@ -527,8 +527,11 @@ class SamplingLayer(Layer):
 
         batch_len = tf.split(tf.shape(inputs), [1, -1])[0]
 
+        max_mask = tf.ones(igrid.shape) * (inputs.shape[1] - 1, inputs.shape[2] - 1, inputs.shape[3] - 1)
+
         lgrid = tf.math.floor(igrid)
-        ugrids = [tf.math.add(lgrid, [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)]) for i in range(8)]
+        ugrids = [tf.minimum(tf.math.add(lgrid, [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)]),
+                             max_mask) for i in range(8)]
 
         udiffs = [tf.subtract(1., tf.abs(tf.subtract(ugrids[i], igrid))) for i in range(8)]
 
@@ -584,9 +587,15 @@ class SamplingLayer(Layer):
         self.__sampling_function__ = self.__resample_nearest__ if method == 'nearest' \
             else self.__resample_interpolation__
 
+        self.method = method
         self.reshape = None
 
-    def set_dsamp_rate(self, dsamp_rate):
+    @property
+    def dsamp_rate(self):
+        return self._dsamp_rate
+
+    @dsamp_rate.setter
+    def dsamp_rate(self, dsamp_rate):
         self._dsamp_rate = tf.cast(
             (dsamp_rate[0], dsamp_rate[0], dsamp_rate[0]) if dsamp_rate.shape[0] != 3 else dsamp_rate,
             dtype=self.dtype)
@@ -672,6 +681,7 @@ class DynamicSamplingLayer(Layer):
                     t1_output_shape[3] == output_shape[3]), "The output shapes of the dwi and T1w output have to match."
 
             end_shape.append(t1_output_shape)
+
         if len(input_shape) > 2:
 
             mask_output_shape = tuple([None] +
@@ -757,9 +767,9 @@ class DynamicSamplingLayer(Layer):
 
         return tf.cond(tf.less_equal(blur_rate, 1.2),
                        lambda: input_tensor[:,
-                                            blur_kernel_size:input_tensor_shape[1]-blur_kernel_size,
-                                            blur_kernel_size:input_tensor_shape[2]-blur_kernel_size,
-                                            blur_kernel_size:input_tensor_shape[3]-blur_kernel_size,
+                                            blur_kernel_size:input_tensor_shape[1] - blur_kernel_size,
+                                            blur_kernel_size:input_tensor_shape[2] - blur_kernel_size,
+                                            blur_kernel_size:input_tensor_shape[3] - blur_kernel_size,
                                             :],
                        lambda: tf.nn.convolution(input_tensor,
                                                  self.__get_blur_kernel__(blur_rate, input_tensor.shape[-1], t1)))
@@ -776,9 +786,9 @@ class DynamicSamplingLayer(Layer):
         tensor_dims = tf.shape(tensor)
 
         return tensor[:,
-                      crop_values_f[0]:tensor_dims[1]-crop_values_c[0],
-                      crop_values_f[1]:tensor_dims[2]-crop_values_c[1],
-                      crop_values_f[2]:tensor_dims[3]-crop_values_c[2],
+                      crop_values_f[0]:tensor_dims[1] - crop_values_c[0],
+                      crop_values_f[1]:tensor_dims[2] - crop_values_c[1],
+                      crop_values_f[2]:tensor_dims[3] - crop_values_c[2],
                       :]
 
     def call(self, inputs, *args, **kwargs):
@@ -816,8 +826,8 @@ class DynamicSamplingLayer(Layer):
         else:
             t1_downsamp_rate = 1.
 
-        self.hr_downsampler.set_dsamp_rate(tf.convert_to_tensor([hr_downsamp_rate]))
-        self.lr_downsampler.set_dsamp_rate(tf.convert_to_tensor([lr_downsamp_rate]))
+        self.hr_downsampler.dsamp_rate = tf.convert_to_tensor([hr_downsamp_rate])
+        self.lr_downsampler.dsamp_rate = tf.convert_to_tensor([lr_downsamp_rate])
 
         if not static_hr:
             inputs_hr = self.__crop__(inputs_hr, hr_downsamp_rate)
@@ -826,13 +836,12 @@ class DynamicSamplingLayer(Layer):
         inputs_hr = self.hr_downsampler(inputs_hr)
         inputs_lr = self.lr_downsampler(inputs_lr)
 
-        self.lr_upsampler.set_dsamp_rate(tf.divide(inputs_lr.shape[1:-1], inputs_hr.shape[1:-1]))
+        self.lr_upsampler.dsamp_rate = tf.divide(inputs_lr.shape[1:-1], inputs_hr.shape[1:-1])
 
         if inputs_t1 is not None:
             if not static_hr:
                 inputs_t1 = self.__crop__(inputs_t1, t1_downsamp_rate)
-
-            self.t1_downsampler.set_dsamp_rate(tf.divide(inputs_t1.shape[1:-1], inputs_hr.shape[1:-1]))
+            self.t1_downsampler.dsamp_rate = tf.divide(inputs_t1.shape[1:-1], inputs_hr.shape[1:-1])
 
             inputs_t1 = self.t1_downsampler(inputs_t1)
 
@@ -842,7 +851,7 @@ class DynamicSamplingLayer(Layer):
         if inputs_mask is not None:
             if not static_hr:
                 inputs_mask = self.__crop__(inputs_mask, hr_downsamp_rate)
-            self.mask_downsampler.set_dsamp_rate(tf.convert_to_tensor([hr_downsamp_rate]))
+            self.mask_downsampler.dsamp_rate = tf.convert_to_tensor([hr_downsamp_rate])
 
             inputs_mask = self.mask_downsampler(inputs_mask)
 
