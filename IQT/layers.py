@@ -1,3 +1,5 @@
+import random
+
 import keras.backend as K
 import keras.src.backend
 import tensorflow as tf
@@ -556,9 +558,7 @@ class SamplingLayer(Layer):
     @staticmethod
     def __resample_nearest__(inputs, igrid):
 
-        # igrid = tf.math.round(self.__config_grid__(inputs.shape))
-
-        igrid = tf.cast(igrid, tf.int32)
+        igrid = tf.cast(tf.math.round(igrid), tf.int32)
 
         batch_len = tf.split(tf.shape(inputs), [1, -1])[0]
 
@@ -605,26 +605,25 @@ class SamplingLayer(Layer):
         return self.__sampling_function__(inputs, self.__config_grid__(inputs.shape))
 
 
-class DynamicSamplingLayer(Layer):
-
+class SamplerLayer(Layer):
     def __init__(self, max_hr_downsamp, max_lr_downsamp, t1_init_downsamp=1.,
-                 static_hr=False,
-                 static_lr=False,
+                 min_hr_downsamp=1.,
                  apply_blurring=True,
                  augment=True, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        assert min_hr_downsamp >= 1.0, "Values smaller than 1 are not supported."
+
         assert max_hr_downsamp < max_lr_downsamp, "The value for maximum high-resolution downsampling " + \
                                                   "can not be larger than the low-resolution rate."
 
-        self.t1_init_downsamp = tf.convert_to_tensor(t1_init_downsamp, dtype=self.dtype)
-        self.max_hr_downsamp = tf.convert_to_tensor(max_hr_downsamp, dtype=self.dtype)
-        self.max_lr_downsamp = tf.convert_to_tensor(max_lr_downsamp, dtype=self.dtype)
-
-        self.static_hr = static_hr
-        self.static_lr = static_lr
         self.apply_blurring = apply_blurring
         self.augment = augment
+
+        self.t1_init_downsamp = tf.convert_to_tensor(t1_init_downsamp, dtype=self.dtype)
+        self.max_hr_downsamp = tf.convert_to_tensor(max_hr_downsamp, dtype=self.dtype)
+        self.min_hr_downsamp = tf.convert_to_tensor(min_hr_downsamp, dtype=self.dtype)
+        self.max_lr_downsamp = tf.convert_to_tensor(max_lr_downsamp, dtype=self.dtype)
 
         self.__blur_kernel_max_size = int(np.int32(np.ceil(2.5 * max_lr_downsamp) / 2) * 2 + 1)
         self.__t1_blur_kernel_max_size = int(np.int32(np.ceil(2.5 * t1_init_downsamp * max_hr_downsamp) / 2) * 2 + 1)
@@ -641,6 +640,19 @@ class DynamicSamplingLayer(Layer):
         self.lr_augmenter = AugmentationLayer(gamma_std=0.)
         self.hr_augmenter = AugmentationLayer(gamma_std=0.)
         self.t1_augmenter = AugmentationLayer()
+
+    def get_config(self):
+        config = super().get_config()
+
+        config["t1_init_downsamp"] = self.t1_init_downsamp.numpy()
+        config["max_hr_downsamp"] = self.max_hr_downsamp.numpy()
+        config["min_hr_downsamp"] = self.min_hr_downsamp.numpy()
+        config["max_lr_downsamp"] = self.max_lr_downsamp.numpy()
+
+        config["apply_blurring"] = self.apply_blurring
+        config["augment"] = self.augment
+
+        return config
 
     def compute_output_shape(self, input_shape):
 
@@ -793,33 +805,20 @@ class DynamicSamplingLayer(Layer):
 
     def call(self, inputs, *args, **kwargs):
 
-        inputs_hr = inputs[0]
         inputs_lr = inputs[0]
-        inputs_t1 = None if len(inputs) < 2 else inputs[1]
-        inputs_mask = None if len(inputs) < 3 else inputs[2]
+        inputs_hr = inputs[1]
+        inputs_t1 = inputs[2]
+        inputs_mask = inputs[3]
 
-        static_hr = self.static_hr or inputs[0].shape[0] is None  # If batch is none just return target shape.
-        static_lr = self.static_lr or inputs[0].shape[0] is None  # If batch is none just return target shape.
-
-        if static_hr:
-            hr_downsamp_rate = self.max_hr_downsamp
-        else:
-            hr_downsamp_rate = tf.random.uniform([], 1., self.max_hr_downsamp, dtype=self.dtype)
-
-        if static_lr:
-            lr_downsamp_rate = self.max_lr_downsamp
-        else:
-            lr_downsamp_rate = tf.random.uniform([], hr_downsamp_rate, self.max_lr_downsamp, dtype=self.dtype)
+        lr_downsamp_rate = inputs[4]
+        hr_downsamp_rate = inputs[5]
 
         if self.apply_blurring:
             inputs_hr = self.blur(inputs_hr, hr_downsamp_rate, False)
             inputs_lr = self.blur(inputs_lr, lr_downsamp_rate, False)
 
         if inputs_t1 is not None:
-            if static_hr:
-                t1_downsamp_rate = self.t1_init_downsamp * self.max_hr_downsamp
-            else:
-                t1_downsamp_rate = self.t1_init_downsamp * hr_downsamp_rate
+            t1_downsamp_rate = self.t1_init_downsamp * hr_downsamp_rate
 
             if self.apply_blurring:
                 inputs_t1 = self.blur(inputs_t1, t1_downsamp_rate, True)
@@ -829,9 +828,8 @@ class DynamicSamplingLayer(Layer):
         self.hr_downsampler.dsamp_rate = tf.convert_to_tensor([hr_downsamp_rate])
         self.lr_downsampler.dsamp_rate = tf.convert_to_tensor([lr_downsamp_rate])
 
-        if not static_hr:
-            inputs_hr = self.__crop__(inputs_hr, hr_downsamp_rate)
-            inputs_lr = self.__crop__(inputs_lr, hr_downsamp_rate)
+        inputs_hr = self.__crop__(inputs_hr, hr_downsamp_rate)
+        inputs_lr = self.__crop__(inputs_lr, hr_downsamp_rate)
 
         inputs_hr = self.hr_downsampler(inputs_hr)
         inputs_lr = self.lr_downsampler(inputs_lr)
@@ -839,8 +837,7 @@ class DynamicSamplingLayer(Layer):
         self.lr_upsampler.dsamp_rate = tf.divide(inputs_lr.shape[1:-1], inputs_hr.shape[1:-1])
 
         if inputs_t1 is not None:
-            if not static_hr:
-                inputs_t1 = self.__crop__(inputs_t1, t1_downsamp_rate)
+            inputs_t1 = self.__crop__(inputs_t1, t1_downsamp_rate)
             self.t1_downsampler.dsamp_rate = tf.divide(inputs_t1.shape[1:-1], inputs_hr.shape[1:-1])
 
             inputs_t1 = self.t1_downsampler(inputs_t1)
@@ -849,8 +846,7 @@ class DynamicSamplingLayer(Layer):
                 inputs_t1 = self.t1_augmenter(inputs_t1)
 
         if inputs_mask is not None:
-            if not static_hr:
-                inputs_mask = self.__crop__(inputs_mask, hr_downsamp_rate)
+            inputs_mask = self.__crop__(inputs_mask, hr_downsamp_rate)
             self.mask_downsampler.dsamp_rate = tf.convert_to_tensor([hr_downsamp_rate])
 
             inputs_mask = self.mask_downsampler(inputs_mask)
@@ -870,6 +866,146 @@ class DynamicSamplingLayer(Layer):
             outputs.append(inputs_mask)
 
         return outputs
+
+
+class RandomSamplerLayer(SamplerLayer):
+
+    def __init__(self, max_hr_downsamp, max_lr_downsamp, t1_init_downsamp=1.,
+                 min_hr_downsamp=1.,
+                 static_hr=False,
+                 static_lr=False,
+                 apply_blurring=True,
+                 augment=True, *args, **kwargs):
+
+        super().__init__(max_hr_downsamp, max_lr_downsamp, t1_init_downsamp, min_hr_downsamp, apply_blurring, augment,
+                         *args, **kwargs)
+
+        self.static_hr = static_hr
+        self.static_lr = static_lr
+
+    def get_config(self):
+        config = super().get_config()
+
+        config["static_hr"] = self.static_hr
+        config["static_lr"] = self.static_lr
+
+        return config
+
+    def call(self, inputs, *args, **kwargs):
+
+        inputs_hr = inputs[0]
+        inputs_lr = inputs[0]
+        inputs_t1 = None if len(inputs) < 2 else inputs[1]
+        inputs_mask = None if len(inputs) < 3 else inputs[2]
+
+        static_hr = self.static_hr or inputs[0].shape[0] is None  # If batch is none just return target shape.
+        static_lr = self.static_lr or inputs[0].shape[0] is None  # If batch is none just return target shape.
+
+        if static_hr:
+            hr_downsamp_rate = self.max_hr_downsamp
+        else:
+            hr_downsamp_rate = tf.random.uniform([], self.min_hr_downsamp, self.max_hr_downsamp, dtype=self.dtype)
+
+        if static_lr:
+            lr_downsamp_rate = self.max_lr_downsamp
+        else:
+            lr_downsamp_rate = tf.random.uniform([], hr_downsamp_rate, self.max_lr_downsamp, dtype=self.dtype)
+
+        return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
+                             lr_downsamp_rate, hr_downsamp_rate], *args, **kwargs)
+
+
+class SameRateSamplerLayer(SamplerLayer):
+
+    def __init__(self, max_hr_downsamp,
+                 downsamp_rate,
+                 t1_init_downsamp=1.,
+                 min_hr_downsamp=1.,
+                 static=False,
+                 apply_blurring=True,
+                 augment=True, *args, **kwargs):
+
+        max_lr_downsamp = max_hr_downsamp * downsamp_rate
+
+        super().__init__(max_hr_downsamp, max_lr_downsamp, t1_init_downsamp, min_hr_downsamp, apply_blurring, augment,
+                         *args, **kwargs)
+
+        self.downsamp_rate = downsamp_rate
+        self.static = static
+
+    def get_config(self):
+        config = super().get_config()
+
+        config["downsamp_rate"] = self.downsamp_rate
+        config["static"] = self.static
+
+        return config
+
+    def call(self, inputs, *args, **kwargs):
+
+        inputs_hr = inputs[0]
+        inputs_lr = inputs[0]
+        inputs_t1 = None if len(inputs) < 2 else inputs[1]
+        inputs_mask = None if len(inputs) < 3 else inputs[2]
+
+        static = self.static or inputs[0].shape[0] is None  # If batch is none just return target shape.
+
+        if static:
+            hr_downsamp_rate = self.max_hr_downsamp
+        else:
+            hr_downsamp_rate = tf.random.uniform([], self.min_hr_downsamp, self.max_hr_downsamp, dtype=self.dtype)
+
+        lr_downsamp_rate = hr_downsamp_rate * self.downsamp_rate
+
+        return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
+                             lr_downsamp_rate, hr_downsamp_rate], *args, **kwargs)
+
+
+class ListSamplerLayer(SamplerLayer):
+
+    def __init__(self,
+                 hr_downsamp_rates,
+                 lr_downsamp_rates,
+                 t1_init_downsamp=1.,
+                 apply_blurring=True,
+                 augment=True, *args, **kwargs):
+
+        super().__init__(max(hr_downsamp_rates), max(lr_downsamp_rates),
+                         t1_init_downsamp, min(hr_downsamp_rates), apply_blurring, augment,
+                         *args, **kwargs)
+
+        self.hr_downsamp_rates = hr_downsamp_rates
+        self.lr_downsamp_rates = lr_downsamp_rates
+
+    def get_config(self):
+        config = super().get_config()
+
+        config["hr_downsamp_rates"] = self.hr_downsamp_rates
+        config["lr_downsamp_rates"] = self.lr_downsamp_rates
+
+        return config
+
+    def call(self, inputs, *args, **kwargs):
+
+        inputs_hr = inputs[0]
+        inputs_lr = inputs[0]
+        inputs_t1 = None if len(inputs) < 2 else inputs[1]
+        inputs_mask = None if len(inputs) < 3 else inputs[2]
+
+        if len(self.hr_downsamp_rates) == 1 or inputs[0].shape[0] is None:  # If batch is none just return target shape.
+            hr_downsamp_rate = self.max_hr_downsamp
+        else:
+            hr_downsamp_rate = tf.convert_to_tensor(random.choice(self.hr_downsamp_rates),
+                                                    dtype=self.dtype)
+
+        if len(self.lr_downsamp_rates) == 1 or inputs[0].shape[0] is None:  # If batch is none just return target shape.
+            lr_downsamp_rate = self.max_hr_downsamp
+        else:
+            lr_downsamp_rate = tf.convert_to_tensor(random.choice(self.lr_downsamp_rates),
+                                                    dtype=self.dtype)
+
+        return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
+                             lr_downsamp_rate, hr_downsamp_rate], *args, **kwargs)
 
 
 def unet_downsample_layer(prev_layer,
