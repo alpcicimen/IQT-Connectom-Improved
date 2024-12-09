@@ -525,20 +525,17 @@ class SamplingLayer(Layer):
 
     # @tf.function(reduce_retracing=True)
     def __resample_interpolation__(self, inputs, igrid):
-        # igrid = self.__config_grid__(inputs.shape)
-
         batch_len = tf.split(tf.shape(inputs), [1, -1])[0]
 
         max_mask = tf.ones(igrid.shape) * (inputs.shape[1] - 1, inputs.shape[2] - 1, inputs.shape[3] - 1)
 
         lgrid = tf.math.floor(igrid)
-        ugrids = [tf.minimum(tf.math.add(lgrid, [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)]),
-                             max_mask) for i in range(8)]
+        ugrids = [tf.math.add(lgrid, [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)]) for i in range(8)]
 
-        udiffs = [tf.subtract(1., tf.abs(tf.subtract(ugrids[i], igrid))) for i in range(8)]
+        udiffs = [1. - tf.abs(ugrids[i] - igrid) for i in range(8)]
 
         for i in range(8):
-            ugrids[i] = tf.cast(ugrids[i], tf.int32)
+            ugrids[i] = tf.cast(tf.minimum(ugrids[i], max_mask), tf.int32)
 
         flat_grids = [
             tf.repeat(tf.reshape(ugrids[i], shape=(ugrids[i].shape[0] *
