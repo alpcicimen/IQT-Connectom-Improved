@@ -99,10 +99,29 @@ class AugmentationLayer(Layer):
 
         modified_output = inputs
 
+        if self.contrast_std > 0 or self.brightness_std > 0:
+            modified_output_min = tf.reduce_min(modified_output, axis=[1, 2, 3], keepdims=True)
+            modified_output_max = tf.reduce_max(modified_output, axis=[1, 2, 3], keepdims=True)
+
+            modified_output = ((modified_output - modified_output_min) /
+                               (modified_output_max - modified_output_min + 1e-7))
+
+            if self.contrast_std > 0:
+                contrast = tf.minimum(1.4, tf.maximum(0.6, 1.0 + tf.random.normal((), stddev=self.contrast_std)))
+
+                modified_output = modified_output - 0.5 * contrast
+
+            if self.brightness_std > 0:
+                brightness = tf.minimum(0.4, tf.maximum(-0.4, tf.random.normal((), self.brightness_std)))
+
+                modified_output += (0.5 + brightness)
+
+            modified_output = modified_output * (modified_output_max - modified_output_min + 1e-7) + modified_output_min
+
         if self.max_noise_std > 0:
             noise_stddev = tf.random.uniform(tf.shape(inputs), maxval=self.max_noise_std)
-            noise = tf.multiply(tf.math.reduce_std(inputs, axis=[1, 2, 3], keepdims=True),
-                                tf.random.normal(tf.shape(inputs), stddev=noise_stddev))
+            noise = (tf.math.reduce_std(inputs, axis=[1, 2, 3], keepdims=True) *
+                     tf.random.normal(tf.shape(inputs), stddev=noise_stddev))
             modified_output = modified_output + noise
 
         modified_output = tf.clip_by_value(modified_output,
@@ -119,7 +138,7 @@ class AugmentationLayer(Layer):
             modified_output = tf.pow((modified_output - modified_output_min) /
                                      (modified_output_max - modified_output_min + 1e-7), gamma_t1)
 
-            modified_output = modified_output * (modified_output_max - modified_output_min) + modified_output_min
+            modified_output = modified_output * (modified_output_max - modified_output_min + 1e-7) + modified_output_min
 
         return modified_output
 
@@ -745,8 +764,8 @@ class SamplerLayer(Layer):
         self.lr_downsampler = SamplingLayer(dsamp_rate=[1])
         self.lr_upsampler = SamplingLayer(dsamp_rate=[1])
 
-        self.lr_augmenter = AugmentationLayer(gamma_std=0.)
-        self.hr_augmenter = AugmentationLayer(gamma_std=0.)
+        self.lr_augmenter = AugmentationLayer(gamma_std=0., brightness_std=0., contrast_std=0.)
+        self.hr_augmenter = AugmentationLayer(gamma_std=0., brightness_std=0., contrast_std=0.)
         self.t1_augmenter = AugmentationLayer()
 
     def get_config(self):
