@@ -121,9 +121,13 @@ def main(model_type,
                          diff_channel_size=
                          108 if diffusion_model == 'dti'
                          else 288,
-                         train_preprocessors=["dynamic_rescale",
-                                              diffusion_model,
-                                              f"normalize_{diffusion_model}"])
+                         train_preprocessors=[
+                             "dynamic_rescale",
+                             # "static_rate_rescale",
+                             # "list_rescale",
+                             diffusion_model,
+                             f"normalize_{diffusion_model}"
+                         ])
 
     loss_best = tf.float32.max
 
@@ -240,7 +244,9 @@ def main(model_type,
         print(f"Run {run + 1} mean training loss: {train_loss / len(train_seq)}")
         print(f"Run {run + 1} mean validation loss: {val_loss / len(validation_seq)}")
 
-        (sample_o, sample_i, sample_t, sample_t1) = model(sample_patch, training=False)
+        sample_pred = model(sample_patch, training=False)
+
+        (sample_o, sample_i, sample_t, sample_t1) = (sample_pred[0], sample_pred[1], sample_pred[2], sample_pred[3])
 
         with (summary_writer.as_default()):
             tf.summary.scalar('Training Epoch Mean Loss', train_loss / len(train_seq), step=run)
@@ -360,7 +366,7 @@ if __name__ == '__main__':
 
     #  Unfortunately bash does not natively support floating point operations, so a possible workaround would be to
     #  calculate the proper floating point before supplying it as a command-line argument.
-    parser.add_argument('--lr_downsampling_max_rate', type=float, default=3.)
+    parser.add_argument('--lr_downsampling_max_rate', type=float, default=2.5)
     parser.add_argument('--hr_downsampling_max_rate', type=float, default=1.6)
     parser.add_argument('--t1_dwi_rate', type=float, default=1.25/0.7)
 
