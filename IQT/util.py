@@ -391,6 +391,33 @@ def apply_gaussian_filter(input_img: NDArray[float], downsample_rate) -> NDArray
                          for channel in np.moveaxis(input_img, -1, 0)], axis=-1)
 
 
+def gridded_interpolation(image: NDArray[float], grid: NDArray[float]) -> NDArray[float]:
+
+    lgrid = np.floor(grid)
+    ugrids = [np.array(lgrid + [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)], dtype=int) for i in range(8)]
+
+    udiffs = [1. - np.abs(ugrids[i] - grid) for i in range(8)]
+
+    out_img = [[] for _ in range(3)]
+
+    for i in range(8):
+        ugrid = ugrids[i].reshape((grid.shape[0] * grid.shape[1] * grid.shape[2], 3))
+
+        out = image[ugrid[:, 0],
+                    ugrid[:, 1],
+                    ugrid[:, 2]].reshape((grid.shape[0], grid.shape[1], grid.shape[2], image.shape[-1]))
+
+        out_img[0].append(out * udiffs[i][..., 2, None])
+
+    for i in range(4):
+        out_img[1].append((out_img[0][2*i] + out_img[0][2*i + 1]) * udiffs[2*i][..., 1, None])
+
+    for i in range(2):
+        out_img[2].append((out_img[1][2*i] + out_img[1][2*i + 1]) * udiffs[4*i][..., 0, None])
+
+    return out_img[2][0] + out_img[2][1]
+
+
 def md_fa_cfa(tensors, mask,
               cluster_mode=False) -> Tuple[NDArray[float],
                                            NDArray[float],

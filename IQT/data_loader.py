@@ -149,7 +149,7 @@ class DWISequence(keras.utils.Sequence):
                 mask = np.array(util.__load_nii__(os.path.join(diff_data_dir, subject_label, dwis_subdir),
                                                   mask_filename).dataobj) > 0
 
-                mask = binary_erosion(mask, morphology.ball(2), iterations=2)
+                mask = binary_erosion(mask, morphology.ball(1), iterations=1)
 
                 t1_downsample_rate = np.array(subject_data_t1_base.shape[:-1]) / np.array(subject_data_base.shape[:-1])
 
@@ -165,7 +165,11 @@ class DWISequence(keras.utils.Sequence):
 
                 self.t1_metrics.append(t1_metric)
 
-                mask = np.array(mask, dtype=bool)
+                mask = np.array(zoom(mask_t1,
+                                     zoom=(1 / t1_downsample_rate[0],
+                                           1 / t1_downsample_rate[1],
+                                           1 / t1_downsample_rate[2]),
+                                     order=0, prefilter=False), dtype=bool)
 
                 bvals = np.array(pd.read_csv(os.path.join(diff_data_dir, subject_label, dwis_subdir, bvals_file),
                                              delimiter="  ",
@@ -255,25 +259,25 @@ class DWISequence(keras.utils.Sequence):
                         k - mask_patch_size//2:k + int(np.ceil(mask_patch_size/2)),
                     ]
 
-                    dwis_patch_size = ((dwi_base_patch_size//2 - mask_patch_size//2),
-                                       int(np.ceil((dwi_base_patch_size + mask_patch_size)/2)))
+                    i_dwi, j_dwi, k_dwi = np.array(
+                        np.round(np.array([i, j, k]) - mask_patch_size//2) + dwi_base_patch_size//2,
+                        dtype=int)
 
                     dwis_patch = valid_dwis[
-                        i - dwis_patch_size[0]:i + dwis_patch_size[1],
-                        j - dwis_patch_size[0]:j + dwis_patch_size[1],
-                        k - dwis_patch_size[0]:k + dwis_patch_size[1],
+                        i_dwi - dwi_base_patch_size//2:i_dwi + dwi_base_patch_size//2,
+                        j_dwi - dwi_base_patch_size//2:j_dwi + dwi_base_patch_size//2,
+                        k_dwi - dwi_base_patch_size//2:k_dwi + dwi_base_patch_size//2,
                         :
                     ]
 
-                    i_t1, j_t1, k_t1 = np.array(
-                        np.round((np.array([i, j, k])-mask_patch_size//2) * t1_to_diff_ratio) + t1_base_patch_size//2,
-                        dtype=int)
+                    i_t1, j_t1, k_t1 = (np.array([i, j, k]) - mask_patch_size/2) * t1_to_diff_ratio
 
-                    t1_patch = subject_data_t1_base[
-                        i_t1 - t1_base_patch_size//2:i_t1 + int(np.ceil(t1_base_patch_size/2)),
-                        j_t1 - t1_base_patch_size//2:j_t1 + int(np.ceil(t1_base_patch_size/2)),
-                        k_t1 - t1_base_patch_size//2:k_t1 + int(np.ceil(t1_base_patch_size/2)),
-                    ]
+                    t1_grid = np.stack(np.meshgrid(np.linspace(i_t1, i_t1 + t1_base_patch_size, t1_base_patch_size),
+                                                   np.linspace(j_t1, j_t1 + t1_base_patch_size, t1_base_patch_size),
+                                                   np.linspace(k_t1, k_t1 + t1_base_patch_size, t1_base_patch_size),
+                                                   ), axis=-1)  # mgrid doesn't work very well due to ieee754 inaccuracy
+
+                    t1_patch = util.gridded_interpolation(subject_data_t1_base, t1_grid)
 
                     assert t1_patch.shape == (t1_base_patch_size, t1_base_patch_size, t1_base_patch_size, 1)
                     assert mask_patch.shape == (mask_patch_size, mask_patch_size, mask_patch_size)
