@@ -60,10 +60,10 @@ def load_maps(directory: str | os.PathLike[str],
 
     subject_propagators = []
 
-    header = __load_nii__(directory, f"{file_head}2").header
+    header = __load_nii__(directory, f"{file_head}02").header
 
-    for i in range(1, 23):
-        subject_propagators.append(np.array(__load_nii__(directory, f"{file_head}{i}").dataobj))
+    for i in range(1, 25):
+        subject_propagators.append(np.array(__load_nii__(directory, f"{file_head}{i:02d}").dataobj))
 
     merged_maps = np.stack(subject_propagators, axis=-1)
     return merged_maps, header

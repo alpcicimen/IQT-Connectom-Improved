@@ -85,6 +85,9 @@ def val_step(dwi_batch, t1_batch, mask_patch, bval_patch, bvec_patch, t1_metric,
     return loss_fn(model_output[0], model_output[2])
 
 
+loss_funcs = {"l1": l1_loss_fn, "l2": l2_loss_fn}
+
+
 def main(model_type,
          diffusion_model: Literal['dti', 'map'],
          patch_size,
@@ -106,6 +109,7 @@ def main(model_type,
          t1_file_head,
          map_metric_dir,
          cluster_mode,
+         preproc_steps,
          batch_size,
          lr,
          lr_decay,
@@ -121,21 +125,11 @@ def main(model_type,
                          diff_channel_size=
                          108 if diffusion_model == 'dti'
                          else 288,
-                         train_preprocessors=[
-                             "dynamic_rescale",
-                             # "static_rate_rescale",
-                             # "list_rescale",
-                             diffusion_model,
-                             f"normalize_{diffusion_model}"
-                         ])
+                         train_preprocessors=preproc_steps)
 
     loss_best = tf.float32.max
 
-    match str(loss_type).lower():
-        case "l1":
-            loss_fn = l1_loss_fn
-        case _:
-            loss_fn = l2_loss_fn
+    loss_fn = loss_funcs[str(loss_type).lower()]
 
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
@@ -253,19 +247,25 @@ def main(model_type,
             tf.summary.scalar('Validation Epoch Mean Loss', val_loss / len(validation_seq), step=run)
 
             tf.summary.image('Model Output Slice',
-                             sample_o[None, 0, :, patch_size//2, :, 0, None],
+                             (sample_o[None, 0, :, patch_size//2-1, :, 0, None] +
+                              sample_o[None, 0, :, patch_size//2-1, :, 3, None] +
+                              sample_o[None, 0, :, patch_size//2-1, :, 5, None]) / 3,
                              step=run)
 
             tf.summary.image('Target DTI Slice',
-                             sample_t[None, 0, :, patch_size//2, :, 0, None],
+                             (sample_t[None, 0, :, patch_size//2-1, :, 0, None] +
+                              sample_t[None, 0, :, patch_size//2-1, :, 3, None] +
+                              sample_t[None, 0, :, patch_size//2-1, :, 5, None]) / 3,
                              step=run)
 
             tf.summary.image('Input DTI Slice',
-                             sample_i[None, 0, :, patch_size//2, :, 0, None],
+                             (sample_i[None, 0, :, patch_size//2-1, :, 0, None] +
+                              sample_i[None, 0, :, patch_size//2-1, :, 3, None] +
+                              sample_i[None, 0, :, patch_size//2-1, :, 5, None]) / 3,
                              step=run)
 
             tf.summary.image('Input T1w Slice',
-                             sample_t1[None, 0, :, patch_size//2, :, 0, None],
+                             sample_t1[None, 0, :, patch_size//2-1, :, 0, None],
                              step=run)
 
         train_seq.on_epoch_end()  # There's no need to shuffle for validation so shuffle only training
@@ -297,11 +297,19 @@ if __name__ == '__main__':
 
     # ----------------------------------------------- I/O Arguments ----------------------------------------------------
 
-    parser.add_argument('--diffusion_model', type=str, default='dti',
+    parser.add_argument('--diffusion_model', type=str, default='dti', choices=['dti', 'map'],
                         help='The diffusion reconstruction model to use. Options: [dti, map]. Default: dti')
 
     parser.add_argument('--cluster_mode', type=bool, default=False,
                         help='Determines whether tqdm will be silent (to reduce file size)')
+
+    parser.add_argument('--preproc_steps', type=str, nargs='*',
+                        choices=["dynamic_rescale", "static_rate_rescale", "list_rescale",
+                                 "dti", "map",
+                                 "normalize_dti", "normalize_map"],
+                        default=["list_rescale",
+                                 "dti",
+                                 "normalize_dti"])
 
     parser.add_argument('--log_dir', type=str,
                         default='/home/acicimen/IQT-Connectom-Improved/logs/run_results')
@@ -331,11 +339,11 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=200,
                         help='Number of epochs to run the model for. Default: 200')
 
-    parser.add_argument('--loss_type', type=str, default='l1',
+    parser.add_argument('--loss_type', type=str, choices=['l1', 'l2'], default='l1',
                         help='The loss type utilised during training. Possible values: [l1, l2]. Default: l1')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='The learning rate of the model. Default: 1e-4')
-    parser.add_argument('--lr_decay', default=None,
+    parser.add_argument('--lr_decay', choices=[None, 'constant', 'exponential'], default=None,
                         help='The learning decay type. Possible values: [(None), constant, exponential]')
 
     parser.add_argument('--training_subjects', nargs='+',
@@ -362,7 +370,7 @@ if __name__ == '__main__':
                                  "561242"])
 
     parser.add_argument('--patch_size', type=int, default=16)
-    parser.add_argument('--patch_spacing', type=int, default=14)
+    parser.add_argument('--patch_spacing', type=int, default=12)
 
     #  Unfortunately bash does not natively support floating point operations, so a possible workaround would be to
     #  calculate the proper floating point before supplying it as a command-line argument.

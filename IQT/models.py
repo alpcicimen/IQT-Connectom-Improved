@@ -41,16 +41,22 @@ def config_model(model_type,
 
         t1w_input = Input((t1w_patch_size, t1w_patch_size, t1w_patch_size, 1), name='t1_weighted_input')
 
-        t1_metrics_input = Input(shape=(2,), name='t1_metrics_input')
+        model_inputs = [diff_input, t1w_input, mask_input]
 
-        bvals_input = Input((diff_channel_size, 1), name='b_value_input')
-        bvecs_input = Input((diff_channel_size, 3), name='b_vector_input')
+        if ("dti" in train_preprocessors) or ("map" in train_preprocessors):
+            bvals_input = Input((diff_channel_size, 1), name='b_value_input')
+            bvecs_input = Input((diff_channel_size, 3), name='b_vector_input')
 
-        model_inputs = [diff_input, t1w_input, mask_input, bvals_input, bvecs_input, t1_metrics_input]
+            model_inputs += [bvals_input, bvecs_input]
 
-        if "normalize_map" in train_preprocessors:
+        if "normalize_dti" in train_preprocessors:
+            t1_metrics_input = Input(shape=(2,), name='t1_metrics_input')
+            model_inputs += [t1_metrics_input]
+
+        if ("normalize_map" in train_preprocessors):
+            t1_metrics_input = Input(shape=(2,), name='t1_metrics_input')
             map_metrics_input = Input(shape=(2,), name='map_metrics_input')
-            model_inputs += [map_metrics_input]
+            model_inputs += [t1_metrics_input, map_metrics_input]
 
         preproc_outputs = [diff_input, diff_input, t1w_input, mask_input]
 
