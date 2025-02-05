@@ -391,10 +391,23 @@ def apply_gaussian_filter(input_img: NDArray[float], downsample_rate) -> NDArray
                          for channel in np.moveaxis(input_img, -1, 0)], axis=-1)
 
 
+def config_grid(x, y, z, x_len: int, y_len: int, z_len: int):
+
+    grid = np.stack(np.meshgrid(np.linspace(x, x + x_len - 1, x_len),
+                                np.linspace(y, y + y_len - 1, y_len),
+                                np.linspace(z, z + z_len - 1, z_len),
+                                indexing='ij'), axis=-1)  # mgrid doesn't work very well due to ieee754 inaccuracy
+
+    return grid
+
+
 def gridded_interpolation(image: NDArray[float], grid: NDArray[float]) -> NDArray[float]:
 
+    max_sizes = np.array(image.shape[:-1]) - 1
+
     lgrid = np.floor(grid)
-    ugrids = [np.array(lgrid + [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)], dtype=int) for i in range(8)]
+    ugrids = [np.clip((lgrid + [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)]).astype(int),
+                      a_min=0, a_max=max_sizes, dtype=int) for i in range(8)]
 
     udiffs = [1. - np.abs(ugrids[i] - grid) for i in range(8)]
 
