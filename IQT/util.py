@@ -391,11 +391,13 @@ def apply_gaussian_filter(input_img: NDArray[float], downsample_rate) -> NDArray
                          for channel in np.moveaxis(input_img, -1, 0)], axis=-1)
 
 
-def config_grid(x, y, z, x_len: int, y_len: int, z_len: int):
+def config_grid(start, end, length: Tuple[int, int, int]):
 
-    grid = np.stack(np.meshgrid(np.linspace(x, x + x_len - 1, x_len),
-                                np.linspace(y, y + y_len - 1, y_len),
-                                np.linspace(z, z + z_len - 1, z_len),
+    range_x = np.linspace(start[0], end[0], length[0], dtype=np.float32)
+    range_y = np.linspace(start[1], end[1], length[1], dtype=np.float32)
+    range_z = np.linspace(start[2], end[2], length[2], dtype=np.float32)
+
+    grid = np.stack(np.meshgrid(range_x, range_y, range_z,
                                 indexing='ij'), axis=-1)  # mgrid doesn't work very well due to ieee754 inaccuracy
 
     return grid

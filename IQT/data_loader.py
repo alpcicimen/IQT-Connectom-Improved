@@ -272,8 +272,11 @@ class DWISequence(keras.utils.Sequence):
 
                     i_t1, j_t1, k_t1 = (np.array([i, j, k]) - mask_patch_size/2) * t1_to_diff_ratio
 
-                    t1_grid = util.config_grid(i_t1, j_t1, k_t1,
-                                               t1_base_patch_size, t1_base_patch_size, t1_base_patch_size)
+                    t1_grid = util.config_grid((i_t1, j_t1, k_t1),
+                                               (i_t1 + t1_base_patch_size - 1,
+                                                j_t1 + t1_base_patch_size - 1,
+                                                k_t1 + t1_base_patch_size - 1),
+                                               (t1_base_patch_size, t1_base_patch_size, t1_base_patch_size))
 
                     t1_patch = util.gridded_interpolation(subject_data_t1_base, t1_grid)
 

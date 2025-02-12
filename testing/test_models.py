@@ -15,12 +15,12 @@ class ModelConfigCase(unittest.TestCase):
     def test_loaders(self):
 
         with self.assertRaises(ValueError):
-            models.config_model("non-existent model", 16, 16)
+            models.config_model("non-existent model", 16, train_preprocessors=[])
 
         for conf in ["UNet-T1", "UNet-PreFusion", "UNet"]:
-            model = models.config_model(conf, 16, 16)
+            model = models.config_model(conf, 16, train_preprocessors=[])
 
-            npt.assert_equal(model.output_shape[1:], (16, 16, 16, 6))
+            self.assertEqual(model.output_shape[1:], (16, 16, 16, 6))
 
 
 if __name__ == '__main__':

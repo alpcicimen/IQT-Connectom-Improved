@@ -78,6 +78,10 @@ class AugmentationLayer(Layer):
                  gamma_std=0.1, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        stds_neg = contrast_std < 0. or brightness_std < 0. or max_noise_std < 0. or gamma_std < 0.
+
+        assert not stds_neg, "Standard deviation values cannot be a negative value!"
+
         self.contrast_std = contrast_std
         self.brightness_std = brightness_std
         self.max_noise_std = max_noise_std
@@ -99,46 +103,35 @@ class AugmentationLayer(Layer):
 
         modified_output = inputs
 
-        if self.contrast_std > 0 or self.brightness_std > 0:
-            modified_output_min = tf.reduce_min(modified_output, axis=[1, 2, 3], keepdims=True)
-            modified_output_max = tf.reduce_max(modified_output, axis=[1, 2, 3], keepdims=True)
+        modified_output_min = tf.reduce_min(modified_output, axis=[1, 2, 3], keepdims=True)
+        modified_output_max = tf.reduce_max(modified_output, axis=[1, 2, 3], keepdims=True)
 
-            modified_output = ((modified_output - modified_output_min) /
-                               (modified_output_max - modified_output_min + 1e-7))
+        modified_output = ((modified_output - modified_output_min) /
+                           (modified_output_max - modified_output_min + 1e-7))
 
-            if self.contrast_std > 0:
-                contrast = tf.minimum(1.4, tf.maximum(0.6, 1.0 + tf.random.normal((), stddev=self.contrast_std)))
+        if self.contrast_std > 0:
+            contrast = tf.minimum(1.25, tf.maximum(0.75, 1.0 + tf.random.normal((), stddev=self.contrast_std)))
 
-                modified_output = modified_output - 0.5 * contrast
+            modified_output = (modified_output - 0.5) * contrast + 0.5
 
-            if self.brightness_std > 0:
-                brightness = tf.minimum(0.4, tf.maximum(-0.4, tf.random.normal((), self.brightness_std)))
+        if self.brightness_std > 0:
+            brightness = tf.minimum(0.2, tf.maximum(-0.2, tf.random.normal((), self.brightness_std)))
 
-                modified_output += (0.5 + brightness)
-
-            modified_output = modified_output * (modified_output_max - modified_output_min + 1e-7) + modified_output_min
+            modified_output += brightness
 
         if self.max_noise_std > 0:
             noise_stddev = tf.random.uniform(tf.shape(inputs), maxval=self.max_noise_std)
-            noise = (tf.math.reduce_std(inputs, axis=[1, 2, 3], keepdims=True) *
-                     tf.random.normal(tf.shape(inputs), stddev=noise_stddev))
+            noise = tf.random.normal(tf.shape(inputs), stddev=noise_stddev)
             modified_output = modified_output + noise
 
-        modified_output = tf.clip_by_value(modified_output,
-                                           tf.reduce_min(inputs, axis=[1, 2, 3], keepdims=True),
-                                           tf.reduce_max(inputs, axis=[1, 2, 3], keepdims=True))
+        modified_output = tf.clip_by_value(modified_output, 0, 1)
 
         if self.gamma_std > 0:
-
             gamma_t1 = tf.exp(tf.random.normal((), stddev=self.gamma_std))
 
-            modified_output_min = tf.reduce_min(modified_output, axis=[1, 2, 3], keepdims=True)
-            modified_output_max = tf.reduce_max(modified_output, axis=[1, 2, 3], keepdims=True)
+            modified_output = tf.pow(modified_output, gamma_t1)
 
-            modified_output = tf.pow((modified_output - modified_output_min) /
-                                     (modified_output_max - modified_output_min + 1e-7), gamma_t1)
-
-            modified_output = modified_output * (modified_output_max - modified_output_min + 1e-7) + modified_output_min
+        modified_output = modified_output * (modified_output_max - modified_output_min + 1e-7) + modified_output_min
 
         return modified_output
 
@@ -546,7 +539,9 @@ class SamplingLayer(Layer):
     def __resample_interpolation__(self, inputs, igrid):
         batch_len = tf.split(tf.shape(inputs), [1, -1])[0]
 
-        max_mask = tf.ones(igrid.shape) * (inputs.shape[1] - 1, inputs.shape[2] - 1, inputs.shape[3] - 1)
+        max_mask = tf.ones(igrid.shape, dtype=self.dtype) * (inputs.shape[1] - 1,
+                                                             inputs.shape[2] - 1,
+                                                             inputs.shape[3] - 1)
 
         lgrid = tf.math.floor(igrid)
         ugrids = [tf.math.add(lgrid, [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)]) for i in range(8)]
@@ -764,9 +759,8 @@ class SamplerLayer(Layer):
         self.lr_downsampler = SamplingLayer(dsamp_rate=[1])
         self.lr_upsampler = SamplingLayer(dsamp_rate=[1])
 
-        self.lr_augmenter = AugmentationLayer(gamma_std=0., brightness_std=0., contrast_std=0.)
-        self.hr_augmenter = AugmentationLayer(gamma_std=0., brightness_std=0., contrast_std=0.)
-        self.t1_augmenter = AugmentationLayer()
+        self.lr_augmenter = AugmentationLayer(gamma_std=0., brightness_std=0., contrast_std=0., max_noise_std=0.05)
+        self.t1_augmenter = AugmentationLayer(max_noise_std=0.1)
 
     def get_config(self):
         config = super().get_config()
@@ -792,14 +786,14 @@ class SamplerLayer(Layer):
             kernel_penalty = self.__blur_kernel_max_size - 1
 
         output_shape = tuple([None] +
-                             [tf.round((input_shape[0][1] - kernel_penalty) / self.max_hr_downsamp),
-                              tf.round((input_shape[0][2] - kernel_penalty) / self.max_hr_downsamp),
-                              tf.round((input_shape[0][3] - kernel_penalty) / self.max_hr_downsamp)] +
+                             [np.round((input_shape[0][1] - kernel_penalty) / self.max_hr_downsamp).astype(int),
+                              np.round((input_shape[0][2] - kernel_penalty) / self.max_hr_downsamp).astype(int),
+                              np.round((input_shape[0][3] - kernel_penalty) / self.max_hr_downsamp).astype(int)] +
                              [input_shape[0][-1]])
 
-        end_shape = [output_shape]
+        end_shape = [output_shape, output_shape]
 
-        if len(input_shape) > 1:
+        if len(input_shape) > 3:
 
             kernel_penalty = 0
 
@@ -807,12 +801,12 @@ class SamplerLayer(Layer):
                 kernel_penalty = self.__t1_blur_kernel_max_size - 1
 
             t1_output_shape = tuple([None] +
-                                    [tf.round((input_shape[1][1] - kernel_penalty) /
-                                              (self.max_hr_downsamp * self.t1_init_downsamp)),
-                                     tf.round((input_shape[1][2] - kernel_penalty) /
-                                              (self.max_hr_downsamp * self.t1_init_downsamp)),
-                                     tf.round((input_shape[1][3] - kernel_penalty) /
-                                              (self.max_hr_downsamp * self.t1_init_downsamp))] +
+                                    [np.round((input_shape[1][1] - kernel_penalty) /
+                                              (self.max_hr_downsamp * self.t1_init_downsamp)).astype(int),
+                                     np.round((input_shape[1][2] - kernel_penalty) /
+                                              (self.max_hr_downsamp * self.t1_init_downsamp)).astype(int),
+                                     np.round((input_shape[1][3] - kernel_penalty) /
+                                              (self.max_hr_downsamp * self.t1_init_downsamp)).astype(int)] +
                                     [input_shape[1][-1]])
 
             assert (t1_output_shape[1] == output_shape[1] and
@@ -821,12 +815,12 @@ class SamplerLayer(Layer):
 
             end_shape.append(t1_output_shape)
 
-        if len(input_shape) > 2:
+        if len(input_shape) > 4:
 
             mask_output_shape = tuple([None] +
-                                      [tf.round(input_shape[2][1] / self.max_hr_downsamp),
-                                       tf.round(input_shape[2][2] / self.max_hr_downsamp),
-                                       tf.round(input_shape[2][3] / self.max_hr_downsamp)] +
+                                      [np.round(input_shape[2][1] / self.max_hr_downsamp).astype(int),
+                                       np.round(input_shape[2][2] / self.max_hr_downsamp).astype(int),
+                                       np.round(input_shape[2][3] / self.max_hr_downsamp).astype(int)] +
                                       [input_shape[2][-1]])
 
             assert (mask_output_shape[1] == output_shape[1] and
@@ -839,13 +833,13 @@ class SamplerLayer(Layer):
 
     def build(self, input_shape):
 
-        if len(input_shape) == 1:
+        if len(input_shape) <= 3:
             self._hr_output_dims = self.compute_output_shape(input_shape)[0]
 
         else:
             output_shape = self.compute_output_shape(input_shape)
             self._hr_output_dims = output_shape[0]
-            self._t1_output_dims = output_shape[1]
+            self._t1_output_dims = output_shape[2]
 
         return super().build(input_shape)
 
@@ -868,13 +862,16 @@ class SamplerLayer(Layer):
 
     def call(self, inputs, *args, **kwargs):
 
+        assert len(inputs) >= 4
+
         inputs_lr = inputs[0]
         inputs_hr = inputs[1]
-        inputs_t1 = inputs[2]
-        inputs_mask = inputs[3]
 
-        lr_downsamp_rate = inputs[4]
-        hr_downsamp_rate = inputs[5]
+        inputs_t1 = inputs[2] if len(inputs) > 4 else None
+        inputs_mask = inputs[3] if len(inputs) > 5 else None
+
+        lr_downsamp_rate = inputs[-2]
+        hr_downsamp_rate = inputs[-1]
 
         if self.apply_blurring:
             inputs_hr = self.hr_blurrer([inputs_hr, hr_downsamp_rate])
@@ -913,7 +910,6 @@ class SamplerLayer(Layer):
             inputs_mask = self.mask_downsampler(inputs_mask)
 
         if self.augment:
-            inputs_hr = self.hr_augmenter(inputs_hr)
             inputs_lr = self.lr_augmenter(inputs_lr)  # Do at lower space to simulate noise
 
         inputs_lr = self.lr_upsampler(inputs_lr)
