@@ -136,9 +136,12 @@ class DWISequence(keras.utils.Sequence):
                 if not os.path.exists(misc_path):
                     os.makedirs(misc_path)
 
-                subject_data_base, hr_header = util.load_dwis(
+                valid_dwis, hr_header, valid_bvals, valid_bvecs = util.load_dwis(
                     os.path.join(diff_data_dir, subject_label, dwis_subdir),
-                    dwis_filename
+                    dwis_filename,
+                    bvals_file,
+                    bvecs_file,
+                    bval_limit
                 )
 
                 subject_data_t1_base, t1_header = util.load_structural(
@@ -151,7 +154,7 @@ class DWISequence(keras.utils.Sequence):
 
                 mask = binary_erosion(mask, morphology.ball(1), iterations=1)
 
-                t1_downsample_rate = np.array(subject_data_t1_base.shape[:-1]) / np.array(subject_data_base.shape[:-1])
+                t1_downsample_rate = np.array(subject_data_t1_base.shape[:-1]) / np.array(valid_dwis.shape[:-1])
 
                 mask_t1 = zoom(mask,
                                zoom=(t1_downsample_rate[0],
@@ -171,29 +174,12 @@ class DWISequence(keras.utils.Sequence):
                                            1 / t1_downsample_rate[2]),
                                      order=0, prefilter=False), dtype=bool)
 
-                bvals = np.array(pd.read_csv(os.path.join(diff_data_dir, subject_label, dwis_subdir, bvals_file),
-                                             delimiter="  ",
-                                             engine="python",
-                                             header=None)).T
-
-                bvecs = np.array(pd.read_csv(os.path.join(diff_data_dir, subject_label, dwis_subdir, bvecs_file),
-                                             delimiter="  ",
-                                             engine="python",
-                                             header=None)).T
-
-                valid_acqs = np.squeeze(bvals < bval_limit)
-
-                valid_bvals = bvals[valid_acqs]
-                valid_bvecs = bvecs[valid_acqs]
-
                 self.all_bvals.append(valid_bvals)
                 self.all_bvecs.append(valid_bvecs)
 
-                valid_dwis = subject_data_base[..., valid_acqs]
-
-                del subject_data_base
-                del bvals
-                del bvecs
+                np.save(os.path.join(misc_path, f"grads"),
+                        np.concatenate([valid_bvals, valid_bvecs], axis=-1),
+                        allow_pickle=True)
 
                 t1_base_patch_size = int(np.round(target_patch_size * t1_to_diff_ratio * max_target_downsamp)) + \
                     np.int32(np.ceil(2.5 * t1_to_diff_ratio * max_target_downsamp) / 2) * 2
@@ -233,9 +219,6 @@ class DWISequence(keras.utils.Sequence):
 
                 sel_mask_indices = np.array(np.where(sel_mask_indices & mask)).T
 
-                np.save(os.path.join(misc_path, f"grads"),
-                        np.concatenate([valid_bvals, valid_bvecs], axis=-1),
-                        allow_pickle=True)
                 np.save(os.path.join(misc_path, f"t1_minmax"), t1_metric, allow_pickle=True)
 
                 for p, (i, j, k) in enumerate(tqdm(sel_mask_indices, disable=cluster_mode)):

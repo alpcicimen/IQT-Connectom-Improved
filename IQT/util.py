@@ -1,4 +1,4 @@
-from typing import Any, Sequence, Tuple
+from typing import Any, Sequence, Tuple, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -7,28 +7,53 @@ import nibabel as nib
 from nibabel.nifti1 import Nifti1Header, Nifti1Image
 from nibabel.nifti2 import Nifti2Header, Nifti2Image
 import os
+import pandas as pd
 
 from tqdm import tqdm
 from scipy.ndimage import convolve
 
 
-def __load_nii__(directory: str | os.PathLike[str], filename: str) -> Nifti1Image | Nifti2Image:
+def __load_nii__(directory: str | os.PathLike[str], filename: str) -> Nifti1Image:
 
     if os.path.exists(os.path.join(directory, f"{filename}.nii")):
-        return nib.load(os.path.join(directory, f"{filename}.nii"))
+        return nib.nifti1.load(os.path.join(directory, f"{filename}.nii"))
     elif os.path.exists(os.path.join(directory, f"{filename}.nii.gz")):
-        return nib.load(os.path.join(directory, f"{filename}.nii.gz"))
+        return nib.nifti1.load(os.path.join(directory, f"{filename}.nii.gz"))
     else:
         raise FileNotFoundError("No such files in directory: \'{}\'"
                                 .format(os.path.join(directory, f"{filename}.nii")))
 
 
 def load_dwis(directory: str | os.PathLike[str],
-              file_head: str) -> Tuple[NDArray[Any], Nifti1Header | Nifti2Header]:
+              file_head: str,
+              bvals_file: str,
+              bvecs_file: str,
+              bval_limit: float) -> Tuple[NDArray[Any], Nifti1Header | Nifti2Header, NDArray[Any], NDArray[Any]]:
 
     dwi_file = __load_nii__(directory, file_head)
 
-    return np.array(dwi_file.dataobj), dwi_file.header
+    bvals = np.array(pd.read_csv(os.path.join(directory, bvals_file),
+                                 delimiter="  ",
+                                 engine="python",
+                                 header=None)).T
+
+    bvecs = np.array(pd.read_csv(os.path.join(directory, bvecs_file),
+                                 delimiter="  ",
+                                 engine="python",
+                                 header=None)).T
+
+    dwis = np.array(dwi_file.dataobj)
+
+    if bval_limit > 0:
+
+        valid_acqs = np.squeeze(bvals < bval_limit)
+
+        bvals = bvals[valid_acqs]
+        bvecs = bvecs[valid_acqs]
+
+        dwis = dwis[..., valid_acqs]
+
+    return dwis, dwi_file.header, bvals, bvecs
 
 
 def load_dtis(directory: str | os.PathLike[str],
@@ -93,11 +118,11 @@ def save_dtis(tensors: NDArray,
 
     for t in range(tensors.shape[-1]):
         nib.save(nib.Nifti1Image(tensors[..., t], None, reference_header),
-                 os.path.join(save_file_loc, f"{dti_file_start}{t+3}"))
+                 os.path.join(save_file_loc, f"{dti_file_start}{t+3}.nii.gz"))
 
     if mask is not None:
         nib.save(nib.Nifti1Image(mask, None, reference_header),
-                 os.path.join(save_file_loc, f"{dti_file_start}1"))
+                 os.path.join(save_file_loc, f"{dti_file_start}1.nii.gz"))
 
 
 def save_md_fa_cfa(md: NDArray[Any],
@@ -176,7 +201,7 @@ def apply_normalization(tensors, mask: NDArray[bool], method='minmax') -> NDArra
 
 
 def apply_normalization_combined(tensors, mask: NDArray[bool],
-                                 method='minmax',
+                                 method: Literal['minmax', 'stdscore'] = 'minmax',
                                  channels: NDArray | None = None,
                                  values: NDArray | None = None) -> NDArray:
     """
