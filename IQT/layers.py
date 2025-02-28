@@ -727,7 +727,9 @@ class SamplerLayer(Layer):
     def __init__(self, max_hr_downsamp, max_lr_downsamp, t1_init_downsamp=1.,
                  min_hr_downsamp=1.,
                  apply_blurring=True,
-                 augment=True, *args, **kwargs):
+                 augment=True,
+                 individual_resampling=True,
+                 *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         assert min_hr_downsamp >= 1.0, "Values smaller than 1 are not supported."
@@ -737,6 +739,7 @@ class SamplerLayer(Layer):
 
         self.apply_blurring = apply_blurring
         self.augment = augment
+        self.individual_resampling = individual_resampling
 
         self.t1_init_downsamp = tf.convert_to_tensor(t1_init_downsamp, dtype=self.dtype)
         self.max_hr_downsamp = tf.convert_to_tensor(max_hr_downsamp, dtype=self.dtype)
@@ -867,6 +870,8 @@ class SamplerLayer(Layer):
         inputs_lr = inputs[0]
         inputs_hr = inputs[1]
 
+        individual_resampling = self.individual_resampling and bool(inputs_hr.shape[0])
+
         inputs_t1 = inputs[2] if len(inputs) > 4 else None
         inputs_mask = inputs[3] if len(inputs) > 5 else None
 
@@ -874,45 +879,116 @@ class SamplerLayer(Layer):
         hr_downsamp_rate = inputs[-1]
 
         if self.apply_blurring:
-            inputs_hr = self.hr_blurrer([inputs_hr, hr_downsamp_rate])
-            inputs_lr = self.lr_blurrer([inputs_lr, lr_downsamp_rate])
 
-        self.hr_downsampler.dsamp_rate = tf.convert_to_tensor([hr_downsamp_rate])
-        self.lr_downsampler.dsamp_rate = tf.convert_to_tensor([lr_downsamp_rate])
+            if individual_resampling:
 
-        inputs_hr = self.__crop__(inputs_hr, hr_downsamp_rate)
-        inputs_lr = self.__crop__(inputs_lr, hr_downsamp_rate)
+                assert inputs_hr.shape[0] == hr_downsamp_rate.shape[0]
+                assert inputs_lr.shape[0] == lr_downsamp_rate.shape[0]
 
-        inputs_hr = self.hr_downsampler(inputs_hr)
-        inputs_lr = self.lr_downsampler(inputs_lr)
+                inputs_hr = tf.concat([self.hr_blurrer([inputs_hr[None, bn], hr_downsamp_rate[bn]])
+                                       for bn in range(inputs_hr.shape[0])],
+                                      axis=0)
+                inputs_lr = tf.concat([self.lr_blurrer([inputs_lr[None, bn], lr_downsamp_rate[bn]])
+                                       for bn in range(inputs_lr.shape[0])],
+                                      axis=0)
 
-        self.lr_upsampler.dsamp_rate = tf.divide(inputs_lr.shape[1:-1], inputs_hr.shape[1:-1])
+            else:
+                inputs_hr = self.hr_blurrer([inputs_hr, hr_downsamp_rate[0]])
+                inputs_lr = self.lr_blurrer([inputs_lr, lr_downsamp_rate[0]])
+
+        if individual_resampling:
+
+            assert inputs_hr.shape[0] == len(hr_downsamp_rate)
+            assert inputs_lr.shape[0] == len(lr_downsamp_rate)
+
+            hr_temp = []
+            for bn in range(inputs_hr.shape[0]):
+                input_hr = self.__crop__(inputs_hr[None, bn], hr_downsamp_rate[bn])
+                self.hr_downsampler.dsamp_rate = tf.convert_to_tensor([hr_downsamp_rate[bn]])
+                hr_temp.append(self.hr_downsampler(input_hr))
+            inputs_hr = tf.concat(hr_temp, axis=0)
+
+            lr_temp = []
+            for bn in range(inputs_lr.shape[0]):
+                input_lr = self.__crop__(inputs_lr[None, bn], hr_downsamp_rate[bn])
+                self.lr_downsampler.dsamp_rate = tf.convert_to_tensor([lr_downsamp_rate[bn]])
+                lr_temp.append(self.lr_downsampler(input_lr))
+            inputs_lr = lr_temp
+
+        else:
+
+            inputs_hr = self.__crop__(inputs_hr, hr_downsamp_rate)
+            inputs_lr = self.__crop__(inputs_lr, hr_downsamp_rate)
+
+            self.hr_downsampler.dsamp_rate = hr_downsamp_rate
+            self.lr_downsampler.dsamp_rate = lr_downsamp_rate
+
+            inputs_hr = self.hr_downsampler(inputs_hr)
+            inputs_lr = self.lr_downsampler(inputs_lr)
 
         if inputs_t1 is not None:
 
             t1_downsamp_rate = self.t1_init_downsamp * hr_downsamp_rate
 
             if self.apply_blurring:
-                inputs_t1 = self.t1_blurrer([inputs_t1, t1_downsamp_rate])
+                if individual_resampling:
+                    inputs_t1 = tf.concat([self.t1_blurrer([inputs_t1[None, bn], t1_downsamp_rate[bn]])
+                                           for bn in range(t1_downsamp_rate.shape[0])], axis=0)
+                else:
+                    inputs_t1 = self.t1_blurrer([inputs_t1, t1_downsamp_rate[0]])
 
-            inputs_t1 = self.__crop__(inputs_t1, t1_downsamp_rate)
-            self.t1_downsampler.dsamp_rate = tf.divide(inputs_t1.shape[1:-1], inputs_hr.shape[1:-1])
+            if individual_resampling:
 
-            inputs_t1 = self.t1_downsampler(inputs_t1)
+                t1_temp = []
+                for bn in range(inputs_t1.shape[0]):
+                    input_t1 = self.__crop__(inputs_t1[None, bn], t1_downsamp_rate[bn])
+                    self.t1_downsampler.dsamp_rate = tf.convert_to_tensor([t1_downsamp_rate[bn]])
+                    t1_temp.append(self.t1_downsampler(input_t1))
+                inputs_t1 = tf.concat(t1_temp, axis=0)
+
+            else:
+                inputs_t1 = self.__crop__(inputs_t1, t1_downsamp_rate[0])
+                self.t1_downsampler.dsamp_rate = tf.divide(inputs_t1.shape[1:-1], inputs_hr.shape[1:-1])
+
+                inputs_t1 = self.t1_downsampler(inputs_t1)
 
             if self.augment:
                 inputs_t1 = self.t1_augmenter(inputs_t1)
 
         if inputs_mask is not None:
-            inputs_mask = self.__crop__(inputs_mask, hr_downsamp_rate)
-            self.mask_downsampler.dsamp_rate = tf.convert_to_tensor([hr_downsamp_rate])
 
-            inputs_mask = self.mask_downsampler(inputs_mask)
+            if individual_resampling:
+                mask_temp = []
+                for bn in range(inputs_mask.shape[0]):
+                    input_mask = self.__crop__(inputs_mask[None, bn], hr_downsamp_rate[bn])
+                    self.mask_downsampler.dsamp_rate = tf.convert_to_tensor([hr_downsamp_rate[bn]])
+                    mask_temp.append(self.mask_downsampler(input_mask))
+                inputs_mask = tf.concat(mask_temp, axis=0)
+
+            else:
+                inputs_mask = self.__crop__(inputs_mask, hr_downsamp_rate)
+                self.mask_downsampler.dsamp_rate = hr_downsamp_rate
+
+                inputs_mask = self.mask_downsampler(inputs_mask)
 
         if self.augment:
-            inputs_lr = self.lr_augmenter(inputs_lr)  # Do at lower space to simulate noise
+            if individual_resampling:
+                inputs_lr = [self.lr_augmenter(input_lr) for input_lr in inputs_lr]
+            else:
+                inputs_lr = self.lr_augmenter(inputs_lr)  # Do at lower space to simulate noise
 
-        inputs_lr = self.lr_upsampler(inputs_lr)
+        if individual_resampling:
+
+            lr_temp = []
+            for input_lr in inputs_lr:
+                self.lr_upsampler.dsamp_rate = tf.divide(input_lr.shape[1:-1], inputs_hr.shape[1:-1])
+                lr_temp.append(self.lr_upsampler(input_lr))
+
+            inputs_lr = tf.concat(lr_temp, axis=0)
+
+        else:
+            self.lr_upsampler.dsamp_rate = tf.divide(inputs_lr.shape[1:-1], inputs_hr.shape[1:-1])
+            inputs_lr = self.lr_upsampler(inputs_lr)
 
         outputs = [inputs_lr, inputs_hr]
 
@@ -955,18 +1031,26 @@ class RandomSamplerLayer(SamplerLayer):
         inputs_t1 = None if len(inputs) < 2 else inputs[1]
         inputs_mask = None if len(inputs) < 3 else inputs[2]
 
-        static_hr = self.static_hr or inputs[0].shape[0] is None  # If batch is none just return target shape.
-        static_lr = self.static_lr or inputs[0].shape[0] is None  # If batch is none just return target shape.
+        static_hr = self.static_hr or not bool(inputs_hr.shape[0])  # If batch is none just return target shape.
+        static_lr = self.static_lr or not bool(inputs_lr.shape[0])  # If batch is none just return target shape.
 
         if static_hr:
-            hr_downsamp_rate = self.max_hr_downsamp
+            hr_downsamp_rate = tf.convert_to_tensor([self.max_hr_downsamp], dtype=self.dtype)
+        elif self.individual_resampling:
+            hr_downsamp_rate = tf.random.uniform([inputs_hr.shape[0]],
+                                                 self.min_hr_downsamp, self.max_hr_downsamp,
+                                                 dtype=self.dtype)
         else:
-            hr_downsamp_rate = tf.random.uniform([], self.min_hr_downsamp, self.max_hr_downsamp, dtype=self.dtype)
+            hr_downsamp_rate = tf.random.uniform([1], self.min_hr_downsamp, self.max_hr_downsamp, dtype=self.dtype)
 
         if static_lr:
-            lr_downsamp_rate = self.max_lr_downsamp
+            lr_downsamp_rate = tf.convert_to_tensor([self.max_lr_downsamp], dtype=self.dtype)
+        elif self.individual_resampling:
+            lr_downsamp_rate = tf.random.uniform([inputs_lr.shape[0]],
+                                                 hr_downsamp_rate, self.max_lr_downsamp,
+                                                 dtype=self.dtype)
         else:
-            lr_downsamp_rate = tf.random.uniform([], hr_downsamp_rate, self.max_lr_downsamp, dtype=self.dtype)
+            lr_downsamp_rate = tf.random.uniform([1], hr_downsamp_rate, self.max_lr_downsamp, dtype=self.dtype)
 
         return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
                              lr_downsamp_rate, hr_downsamp_rate], *args, **kwargs)
@@ -1005,12 +1089,16 @@ class SameRateSamplerLayer(SamplerLayer):
         inputs_t1 = None if len(inputs) < 2 else inputs[1]
         inputs_mask = None if len(inputs) < 3 else inputs[2]
 
-        static = self.static or inputs[0].shape[0] is None  # If batch is none just return target shape.
+        static = self.static or not bool(inputs_hr.shape[0])  # If batch is none just return target shape.
 
         if static:
-            hr_downsamp_rate = self.max_hr_downsamp
+            hr_downsamp_rate = tf.convert_to_tensor([self.max_hr_downsamp], dtype=self.dtype)
+        elif self.individual_resampling:
+            hr_downsamp_rate = tf.random.uniform([inputs_hr.shape[0]],
+                                                 self.min_hr_downsamp, self.max_hr_downsamp,
+                                                 dtype=self.dtype)
         else:
-            hr_downsamp_rate = tf.random.uniform([], self.min_hr_downsamp, self.max_hr_downsamp, dtype=self.dtype)
+            hr_downsamp_rate = tf.random.uniform([1], self.min_hr_downsamp, self.max_hr_downsamp, dtype=self.dtype)
 
         lr_downsamp_rate = hr_downsamp_rate * self.downsamp_rate
 
@@ -1049,16 +1137,22 @@ class ListSamplerLayer(SamplerLayer):
         inputs_t1 = None if len(inputs) < 2 else inputs[1]
         inputs_mask = None if len(inputs) < 3 else inputs[2]
 
-        if len(self.hr_downsamp_rates) == 1 or inputs[0].shape[0] is None:  # If batch is none just return target shape.
-            hr_downsamp_rate = self.max_hr_downsamp
+        if not bool(inputs_hr.shape[0]):  # If batch is none just return target shape.
+            hr_downsamp_rate = tf.convert_to_tensor([self.max_hr_downsamp])
+        elif self.individual_resampling:
+            hr_downsamp_rate = tf.convert_to_tensor(random.choices(self.hr_downsamp_rates, k=inputs_hr.shape[0]),
+                                                    dtype=self.dtype)
         else:
-            hr_downsamp_rate = tf.convert_to_tensor(random.choice(self.hr_downsamp_rates),
+            hr_downsamp_rate = tf.convert_to_tensor([random.choice(self.hr_downsamp_rates)],
                                                     dtype=self.dtype)
 
-        if len(self.lr_downsamp_rates) == 1 or inputs[0].shape[0] is None:  # If batch is none just return target shape.
-            lr_downsamp_rate = self.max_hr_downsamp
+        if not bool(inputs_lr.shape[0]):  # If batch is none just return target shape.
+            lr_downsamp_rate = tf.convert_to_tensor([self.max_lr_downsamp])
+        elif self.individual_resampling:
+            lr_downsamp_rate = tf.convert_to_tensor(random.choices(self.lr_downsamp_rates, k=inputs_lr.shape[0]),
+                                                    dtype=self.dtype)
         else:
-            lr_downsamp_rate = tf.convert_to_tensor(random.choice(self.lr_downsamp_rates),
+            lr_downsamp_rate = tf.convert_to_tensor([random.choice(self.lr_downsamp_rates)],
                                                     dtype=self.dtype)
 
         return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
