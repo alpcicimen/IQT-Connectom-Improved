@@ -1,7 +1,9 @@
 import argparse
 import os.path
+import random
 
 import keras.optimizers.schedules
+import numpy as np
 from tensorflow import keras
 from tensorflow.keras.optimizers.schedules import ExponentialDecay, PiecewiseConstantDecay, LearningRateSchedule
 
@@ -113,6 +115,7 @@ def main(model_type,
          batch_size,
          lr,
          lr_decay,
+         checkpoint_dir,
          epochs,
          log_dir):
     global model
@@ -127,7 +130,7 @@ def main(model_type,
                          else 288,
                          train_preprocessors=preproc_steps)
 
-    loss_best = tf.float32.max
+    loss_best = tf.Variable(tf.float32.max)
 
     loss_fn = loss_funcs[str(loss_type).lower()]
 
@@ -191,7 +194,35 @@ def main(model_type,
 
     sample_patch = validation_seq[0]
 
-    for run in range(epochs):
+########################################################################################################################
+
+# ------------------------------------------------ Checkpointing -------------------------------------------------------
+
+########################################################################################################################
+
+    step = tf.Variable(0)
+
+    py_state = random.getstate()
+    np_state = np.random.get_state(legacy=True)
+
+    py_rng = tf.Variable(py_state[1])
+    np_rng = tf.Variable(np_state[1])
+
+    tf_rng = tf.random.get_global_generator()
+
+    checkpoint = tf.train.Checkpoint(optim=optim, model=model, step=step, loss_best=loss_best,
+                                     py_rng=py_rng, np_rng=np_rng, tf_rng=tf_rng)
+    manager = tf.train.CheckpointManager(checkpoint, directory=checkpoint_dir, max_to_keep=3)
+
+    if manager.latest_checkpoint:
+        checkpoint.restore(manager.latest_checkpoint)
+
+        random.setstate((py_state[0], tuple(py_rng.numpy().tolist()), py_state[2]))
+        # tf.random.get_global_generator().reset(tf_gen)
+        np_state = (np_state[0], np_rng.value(), np_state[2], np_state[3], np_state[4])
+        np.random.set_state(np_state)
+
+    for run in range(step.value(), epochs):
 
         train_loss = 0
         val_loss = 0
@@ -270,6 +301,13 @@ def main(model_type,
 
         train_seq.on_epoch_end()  # There's no need to shuffle for validation so shuffle only training
 
+        step.assign_add(1)
+
+        py_rng.assign(random.getstate()[1])
+        np_rng.assign(np.random.get_state(legacy=True)[1])
+
+        manager.save()
+
         if val_loss < loss_best:
             loss_best = val_loss
             model.save_weights(os.path.join(output_dir, "Run_Best"))
@@ -336,6 +374,9 @@ if __name__ == '__main__':
 
     # -------------------------------------------- Training Arguments --------------------------------------------------
 
+    parser.add_argument('--checkpoint_dir', type=str,
+                        default='../checkpoint')
+
     parser.add_argument('--epochs', type=int, default=200,
                         help='Number of epochs to run the model for. Default: 200')
 
@@ -387,6 +428,7 @@ if __name__ == '__main__':
 ########################################################################################################################
 
     keras.utils.set_random_seed(42)
+    tf.random.get_global_generator().reset_from_seed(42)
 
     args = parser.parse_args()
 

@@ -13,25 +13,33 @@ def config_model(model_type,
                  target_patch_size=16,
                  downsamp_rates: Sequence[float, float, float] = (1.6, 3.0, 1.25 / 0.7),
                  diff_channel_size=6,
-                 train_preprocessors: None | List[Literal["dti",
-                                                          "map",
-                                                          "dynamic_rescale",
-                                                          "static_rate_rescale",
-                                                          "list_rescale",
-                                                          "normalize_map",
-                                                          "normalize_dti"]] = None,
+                 train_preprocessors: List[Literal["dti",
+                                                   "map",
+                                                   "dynamic_rescale",
+                                                   "static_rate_rescale",
+                                                   "list_rescale",
+                                                   "normalize_map",
+                                                   "normalize_dti"]] = [],
                  weights_dir: None | str | os.PathLike[str] = None):
 
     diff_recon_ch_size = diff_channel_size  # Placeholder
 
-    if train_preprocessors is not None:
+    if len(train_preprocessors) > 0:
 
         kernel_penalty_diff = np.int32(np.ceil(2.5 * downsamp_rates[1]) / 2) * 2
         kernel_penalty_t1 = np.int32(np.ceil(2.5 * downsamp_rates[2] * downsamp_rates[0]) / 2) * 2
 
-        dwi_patch_size = int(np.ceil(target_patch_size * downsamp_rates[0])) + kernel_penalty_diff
-        t1w_patch_size = int(np.round(target_patch_size * downsamp_rates[0] * downsamp_rates[2]) + kernel_penalty_t1)
-        mask_patch_size = int(np.ceil(target_patch_size * downsamp_rates[0]))
+        if "rescale" in "".join(train_preprocessors):
+            dwi_patch_size = int(np.ceil(target_patch_size * downsamp_rates[0])) + kernel_penalty_diff
+            t1w_patch_size = int(np.round(target_patch_size * downsamp_rates[0] * downsamp_rates[2]) + kernel_penalty_t1)
+            mask_patch_size = int(np.ceil(target_patch_size * downsamp_rates[0]))
+
+        else:
+            (dwi_patch_size,
+             t1w_patch_size,
+             mask_patch_size) = (target_patch_size,
+                                 target_patch_size,
+                                 target_patch_size)
 
         diff_input = Input(shape=(dwi_patch_size, dwi_patch_size, dwi_patch_size, diff_channel_size),
                            name='dmri_input')
@@ -82,7 +90,7 @@ def config_model(model_type,
 
                 case "list_rescale":
 
-                    sampler_layer = ListSamplerLayer(hr_downsamp_rates=[1.0],
+                    sampler_layer = ListSamplerLayer(hr_downsamp_rates=[downsamp_rates[0]],
                                                      lr_downsamp_rates=[1.25, 1.5, 2.0, 2.5],
                                                      t1_init_downsamp=downsamp_rates[2])
 
@@ -176,7 +184,7 @@ def config_model(model_type,
         case _:
             raise ValueError(f"No model configuration for \"{model_type}\" found!")
 
-    if train_preprocessors is not None:
+    if len(train_preprocessors) > 0:
         model += [lr_patch, hr_patch, t1_patch]
 
         model = keras.Model(model_inputs, model)
@@ -258,10 +266,10 @@ def unet3d_t1_v2(i_layer, t1_layer, diff_ch_size=6):
         Average()([t1_d_layer2, d_layer2]))
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
-                                      concat_layer=Concatenate(axis=4)([d_layer1, t1_d_layer1]),
+                                      concat_layer=[d_layer1, t1_d_layer1],
                                       filter_size=diff_ch_size * 4 * 4, kernel_size=3)
     u_layer2 = unet_upsample_layer_v2(u_layer1,
-                                      concat_layer=Concatenate(axis=4)([conv_input, t1_input]),
+                                      concat_layer=[conv_input, t1_input],
                                       filter_size=diff_ch_size * 4, kernel_size=3)
 
     o_layer = Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same')(u_layer2)
@@ -352,10 +360,10 @@ def unet3d_pre_fusion_v2(i_layer, t1_layer, diff_ch_size=6):
                             BatchNormalization()])(d_layer2)
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
-                                      concat_layer=d_layer1,
+                                      concat_layer=[d_layer1],
                                       filter_size=(diff_ch_size + 1) * 4 * 4, kernel_size=3)
     u_layer2 = unet_upsample_layer_v2(u_layer1,
-                                      concat_layer=conv_input,
+                                      concat_layer=[conv_input],
                                       filter_size=(diff_ch_size + 1) * 4, kernel_size=3)
 
     o_layer = Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same')(u_layer2)
@@ -386,10 +394,10 @@ def unet3d_not1_v2(i_layer, diff_ch_size=6):
                             BatchNormalization()])(d_layer2)
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
-                                      concat_layer=d_layer1,
+                                      concat_layer=[d_layer1],
                                       filter_size=diff_ch_size * 4 * 4, kernel_size=3)
     u_layer2 = unet_upsample_layer_v2(u_layer1,
-                                      concat_layer=conv_input,
+                                      concat_layer=[conv_input],
                                       filter_size=diff_ch_size * 4, kernel_size=3)
 
     o_layer = Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same')(u_layer2)

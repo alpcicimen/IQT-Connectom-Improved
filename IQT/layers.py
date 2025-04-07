@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from typing import List, Literal
 
+rand_gen = tf.random.get_global_generator()
 
 class DepthToSpaceLayer(Layer):
 
@@ -110,24 +111,24 @@ class AugmentationLayer(Layer):
                            (modified_output_max - modified_output_min + 1e-7))
 
         if self.contrast_std > 0:
-            contrast = tf.minimum(1.25, tf.maximum(0.75, 1.0 + tf.random.normal((), stddev=self.contrast_std)))
+            contrast = tf.minimum(1.25, tf.maximum(0.75, 1.0 + rand_gen.normal((), stddev=self.contrast_std)))
 
             modified_output = (modified_output - 0.5) * contrast + 0.5
 
         if self.brightness_std > 0:
-            brightness = tf.minimum(0.2, tf.maximum(-0.2, tf.random.normal((), self.brightness_std)))
+            brightness = tf.minimum(0.2, tf.maximum(-0.2, rand_gen.normal((), self.brightness_std)))
 
             modified_output += brightness
 
         if self.max_noise_std > 0:
-            noise_stddev = tf.random.uniform(tf.shape(inputs), maxval=self.max_noise_std)
-            noise = tf.random.normal(tf.shape(inputs), stddev=noise_stddev)
+            noise_stddev = rand_gen.uniform(tf.shape(inputs), maxval=self.max_noise_std)
+            noise = rand_gen.normal(tf.shape(inputs), stddev=noise_stddev)
             modified_output = modified_output + noise
 
         modified_output = tf.clip_by_value(modified_output, 0, 1)
 
         if self.gamma_std > 0:
-            gamma_t1 = tf.exp(tf.random.normal((), stddev=self.gamma_std))
+            gamma_t1 = tf.exp(rand_gen.normal((), stddev=self.gamma_std))
 
             modified_output = tf.pow(modified_output, gamma_t1)
 
@@ -240,7 +241,7 @@ class DTIFitLayer(Layer):
 
         X = tf.cast(self.__create_X__(bvals, bvecs), dtype=self.dtype)
 
-        y = self.permute1(self.reshape1(tf.math.log(tf.add(dwis, keras.src.backend.epsilon()))))
+        y = self.permute1(self.reshape1(tf.math.log(tf.add(dwis, 1e-7))))
         b = tf.linalg.lstsq(X, y)
 
         out_tensor = self.reshape2(self.permute2(b)[..., :6])
@@ -1037,20 +1038,24 @@ class RandomSamplerLayer(SamplerLayer):
         if static_hr:
             hr_downsamp_rate = tf.convert_to_tensor([self.max_hr_downsamp], dtype=self.dtype)
         elif self.individual_resampling:
-            hr_downsamp_rate = tf.random.uniform([inputs_hr.shape[0]],
-                                                 self.min_hr_downsamp, self.max_hr_downsamp,
-                                                 dtype=self.dtype)
+            hr_downsamp_rate = rand_gen.uniform([inputs_hr.shape[0]],
+                                                self.min_hr_downsamp, self.max_hr_downsamp,
+                                                dtype=self.dtype)
         else:
-            hr_downsamp_rate = tf.random.uniform([1], self.min_hr_downsamp, self.max_hr_downsamp, dtype=self.dtype)
+            hr_downsamp_rate = rand_gen.uniform([1],
+                                                self.min_hr_downsamp, self.max_hr_downsamp,
+                                                dtype=self.dtype)
 
         if static_lr:
             lr_downsamp_rate = tf.convert_to_tensor([self.max_lr_downsamp], dtype=self.dtype)
         elif self.individual_resampling:
-            lr_downsamp_rate = tf.random.uniform([inputs_lr.shape[0]],
-                                                 hr_downsamp_rate, self.max_lr_downsamp,
-                                                 dtype=self.dtype)
+            lr_downsamp_rate = rand_gen.uniform([inputs_lr.shape[0]],
+                                                hr_downsamp_rate, self.max_lr_downsamp,
+                                                dtype=self.dtype)
         else:
-            lr_downsamp_rate = tf.random.uniform([1], hr_downsamp_rate, self.max_lr_downsamp, dtype=self.dtype)
+            lr_downsamp_rate = rand_gen.uniform([1],
+                                                hr_downsamp_rate, self.max_lr_downsamp,
+                                                dtype=self.dtype)
 
         return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
                              lr_downsamp_rate, hr_downsamp_rate], *args, **kwargs)
@@ -1094,11 +1099,13 @@ class SameRateSamplerLayer(SamplerLayer):
         if static:
             hr_downsamp_rate = tf.convert_to_tensor([self.max_hr_downsamp], dtype=self.dtype)
         elif self.individual_resampling:
-            hr_downsamp_rate = tf.random.uniform([inputs_hr.shape[0]],
-                                                 self.min_hr_downsamp, self.max_hr_downsamp,
-                                                 dtype=self.dtype)
+            hr_downsamp_rate = rand_gen.uniform([inputs_hr.shape[0]],
+                                                self.min_hr_downsamp, self.max_hr_downsamp,
+                                                dtype=self.dtype)
         else:
-            hr_downsamp_rate = tf.random.uniform([1], self.min_hr_downsamp, self.max_hr_downsamp, dtype=self.dtype)
+            hr_downsamp_rate = rand_gen.uniform([1],
+                                                self.min_hr_downsamp, self.max_hr_downsamp,
+                                                dtype=self.dtype)
 
         lr_downsamp_rate = hr_downsamp_rate * self.downsamp_rate
 
