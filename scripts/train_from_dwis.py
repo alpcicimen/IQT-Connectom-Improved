@@ -307,7 +307,7 @@ if __name__ == '__main__':
                         choices=["dynamic_rescale", "static_rate_rescale", "list_rescale",
                                  "dti", "map",
                                  "normalize_dti", "normalize_map"],
-                        default=["list_rescale",
+                        default=["dynamic_rescale",
                                  "dti",
                                  "normalize_dti"])
 

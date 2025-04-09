@@ -68,7 +68,8 @@ def config_model(model_type,
 
                     sampler_layer = RandomSamplerLayer(max_hr_downsamp=downsamp_rates[0],
                                                        max_lr_downsamp=downsamp_rates[1],
-                                                       t1_init_downsamp=downsamp_rates[2])
+                                                       t1_init_downsamp=downsamp_rates[2],
+                                                       individual_resampling=True)
 
                     preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
@@ -258,10 +259,10 @@ def unet3d_t1_v2(i_layer, t1_layer, diff_ch_size=6):
         Average()([t1_d_layer2, d_layer2]))
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
-                                      concat_layer=Concatenate(axis=4)([d_layer1, t1_d_layer1]),
+                                      concat_layer=[d_layer1, t1_d_layer1],
                                       filter_size=diff_ch_size * 4 * 4, kernel_size=3)
     u_layer2 = unet_upsample_layer_v2(u_layer1,
-                                      concat_layer=Concatenate(axis=4)([conv_input, t1_input]),
+                                      concat_layer=[conv_input, t1_input],
                                       filter_size=diff_ch_size * 4, kernel_size=3)
 
     o_layer = Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same')(u_layer2)

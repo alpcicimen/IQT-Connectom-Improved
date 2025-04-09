@@ -1,5 +1,7 @@
 from typing import Any, Sequence, Tuple, Literal
 
+import tensorflow as tf
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -426,6 +428,96 @@ def config_grid(start, end, length: Tuple[int, int, int]):
                                 indexing='ij'), axis=-1)  # mgrid doesn't work very well due to ieee754 inaccuracy
 
     return grid
+
+
+def get_interpolate_tf(int_shape, dtype):
+    @tf.function(input_signature=(tf.TensorSpec(shape=[8, None, int_shape[0], int_shape[1], int_shape[2], None],
+                                                dtype=dtype),
+                                  tf.TensorSpec(shape=[8, None, int_shape[0], int_shape[1], int_shape[2], 3],
+                                                dtype=dtype)))
+    def interpolate_tf(vals, weights):
+        c00 = tf.math.add(tf.multiply(vals[0], weights[0][..., 2, None]),
+                          tf.multiply(vals[1], weights[1][..., 2, None]))
+        c01 = tf.math.add(tf.multiply(vals[2], weights[2][..., 2, None]),
+                          tf.multiply(vals[3], weights[3][..., 2, None]))
+        c10 = tf.math.add(tf.multiply(vals[4], weights[4][..., 2, None]),
+                          tf.multiply(vals[5], weights[5][..., 2, None]))
+        c11 = tf.math.add(tf.multiply(vals[6], weights[6][..., 2, None]),
+                          tf.multiply(vals[7], weights[7][..., 2, None]))
+
+        c0 = tf.add(tf.multiply(c00, weights[0][..., 1, None]),
+                    tf.multiply(c01, weights[2][..., 1, None]))
+        c1 = tf.add(tf.multiply(c10, weights[4][..., 1, None]),
+                    tf.multiply(c11, weights[6][..., 1, None]))
+
+        result = tf.add(tf.multiply(c0, weights[0][..., 0, None]),
+                        tf.multiply(c1, weights[4][..., 0, None]))
+
+        return result
+
+    return interpolate_tf
+
+
+@tf.function(input_signature=(tf.TensorSpec(shape=[None, None, None, None, None],),
+                              tf.TensorSpec(shape=[3,], dtype=tf.float64),
+                              tf.TensorSpec(shape=[3,], dtype=tf.int32)))
+def config_grid_tf_double(input_layer, s_rate, end_shape):
+
+    dim_0 = tf.cast(tf.round(
+        tf.divide(tf.cast(tf.shape(input_layer)[1], dtype=tf.float64), s_rate[0])),
+        dtype=tf.uint32)
+
+    dim_1 = tf.cast(tf.round(
+        tf.divide(tf.cast(tf.shape(input_layer)[2], dtype=tf.float64), s_rate[1])),
+        dtype=tf.uint32)
+
+    dim_2 = tf.cast(tf.round(
+        tf.divide(tf.cast(tf.shape(input_layer)[3], dtype=tf.float64), s_rate[2])),
+        dtype=tf.uint32)
+
+    igrid = tf.zeros((end_shape, 3))
+
+    igrid[0:dim_0, 0:dim_1, 0:dim_2] = tf.cast(
+        tf.stack(
+            tf.meshgrid(tf.linspace(0, tf.subtract(tf.shape(input_layer)[1], 1), dim_0),
+                        tf.linspace(0, tf.subtract(tf.shape(input_layer)[2], 1), dim_1),
+                        tf.linspace(0, tf.subtract(tf.shape(input_layer)[3], 1), dim_2),
+                        indexing='ij'),
+            axis=-1),
+        tf.float64)
+
+    return igrid
+
+
+# @tf.function
+def config_ragged_grid(input_shape, s_rates, l_dtype):
+
+    # igrids = tf.TensorArray(dtype=l_dtype, size=input_shape[0])
+
+    # for b in tf.range(input_shape[0]):
+    #
+    #     dense_t = config_grid_tf(input_shape, s_rates[b], l_dtype)
+    #
+    #     igrids.write(b, dense_t)
+
+    igrids = []
+
+    for b in tf.range(input_shape[0]):
+
+        dense_t = config_grid_tf(input_shape, s_rates[b], l_dtype)
+
+        print(tf.shape(dense_t))
+
+        igrids.append(dense_t)
+
+    return tf.ragged.stack(igrids)
+
+    # meshgrids = tf.map_fn(
+    #     lambda i: config_grid_tf(input_shape, s_rates[i], l_dtype),
+    #     tf.range(input_shape[0]),
+    #     fn_output_signature=tf.RaggedTensorSpec(shape=(None, None, None, 3), dtype=tf.uint32)
+    # )
+    # return meshgrids
 
 
 def gridded_interpolation(image: NDArray[float], grid: NDArray[float]) -> NDArray[float]:

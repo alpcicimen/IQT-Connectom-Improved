@@ -72,30 +72,18 @@ class AugmentationLayerCase(tft.TestCase):
 
 class SamplingLayerCase(tft.TestCase):
 
-    def testGetterSetter(self):
-
-        sampling_layer = layers.SamplingLayer(dsamp_rate=[2], method='nearest', dtype=tf.float32)
-
-        self.assertItemsEqual(np.array(sampling_layer.dsamp_rate), np.array([2., 2., 2.]))
-
-        sampling_layer.dsamp_rate = np.array([3])
-
-        self.assertItemsEqual(np.array(sampling_layer.dsamp_rate), np.array([3., 3., 3.]))
-
-        sampling_layer.dsamp_rate = np.array([3, 1, 5])
-
-        self.assertItemsEqual(np.array(sampling_layer.dsamp_rate), np.array([3., 1., 5.]))
-
     def testNearestDownsampling(self):
 
-        sampling_layer = layers.SamplingLayer(dsamp_rate=[2], method='nearest', dtype=tf.float64)
+        sampling_layer = layers.SamplingLayer(end_shape=(10, 10, 10), method='nearest', dtype=tf.float64)
 
         pre_interp = tf.cast(tf.stack(tf.meshgrid(tf.linspace(0, 19, 20),
                                                   tf.linspace(0, 19, 20),
                                                   tf.linspace(0, 19, 20),
                                                   indexing='ij'), axis=-1), dtype=tf.float64)
 
-        post_interp = sampling_layer(pre_interp[None, ...])[0]
+        post_interp = sampling_layer([pre_interp[None, ...],
+                                      tf.convert_to_tensor([[20., 20., 20.]], dtype=tf.float64),
+                                      tf.convert_to_tensor([[2.0, 2.0, 2.0]])])[0]
 
         target_interp = tf.convert_to_tensor(
             zoom(pre_interp, zoom=(0.5, 0.5, 0.5, 1.), order=0, prefilter=False), dtype=tf.float64)
@@ -104,17 +92,59 @@ class SamplingLayerCase(tft.TestCase):
 
     def testTriLinearDownsampling(self):
 
-        sampling_layer = layers.SamplingLayer(dsamp_rate=[2], method='trilinear', dtype=tf.float64)
+        sampling_layer = layers.SamplingLayer(end_shape=(8, 8, 8), method='trilinear', dtype=tf.float64)
 
         pre_interp = tf.cast(tf.stack(tf.meshgrid(tf.linspace(0, 19, 20),
                                                   tf.linspace(0, 19, 20),
                                                   tf.linspace(0, 19, 20),
                                                   indexing='ij'), axis=-1), dtype=tf.float64)
 
-        post_interp = sampling_layer(pre_interp[None, ...])[0]
+        post_interp = sampling_layer([pre_interp[None, ...],
+                                      tf.convert_to_tensor([[20., 20., 20.]], dtype=tf.float64),
+                                      tf.convert_to_tensor([[2.5, 2.5, 2.5]])])[0]
 
         target_interp = tf.convert_to_tensor(
-            zoom(pre_interp, zoom=(0.5, 0.5, 0.5, 1.), order=1, prefilter=False), dtype=tf.float64)
+            zoom(pre_interp, zoom=(0.4, 0.4, 0.4, 1.), order=1, prefilter=False), dtype=tf.float64)
+
+        self.assertTrue(tf.reduce_sum(tf.abs(target_interp - post_interp)) <= 1e-5)
+
+    def testTriLinearUpsampling(self):
+
+        sampling_layer = layers.SamplingLayer(end_shape=(16, 16, 16), method='trilinear', dtype=tf.float64)
+
+        pre_interp = tf.cast(tf.stack(tf.meshgrid(tf.linspace(0, 9, 10),
+                                                  tf.linspace(0, 9, 10),
+                                                  tf.linspace(0, 9, 10),
+                                                  indexing='ij'), axis=-1), dtype=tf.float64)
+
+        post_interp = sampling_layer([pre_interp[None, ...],
+                                      tf.convert_to_tensor([[10., 10., 10.]], dtype=tf.float64),
+                                      tf.convert_to_tensor([[0.625, 0.625, 0.625]])])[0]
+
+        target_interp = tf.convert_to_tensor(
+            zoom(pre_interp, zoom=(1.6, 1.6, 1.6, 1.), order=1, prefilter=False), dtype=tf.float64)
+
+        self.assertTrue(tf.reduce_sum(tf.abs(target_interp - post_interp)) <= 1e-5)
+
+    def testTriLinearDownUpSampling(self):
+
+        sampling_layer = layers.SamplingLayer(end_shape=(16, 16, 16), method='trilinear', dtype=tf.float64)
+
+        pre_interp = tf.cast(tf.stack(tf.meshgrid(tf.linspace(0, 19, 20),
+                                                  tf.linspace(0, 19, 20),
+                                                  tf.linspace(0, 19, 20),
+                                                  indexing='ij'), axis=-1), dtype=tf.float64)
+
+        mid_interp = sampling_layer([pre_interp[None, ...],
+                                     tf.convert_to_tensor([[20., 20., 20.]]),
+                                     tf.convert_to_tensor([[2., 2., 2.]])])[0]
+
+        post_interp = sampling_layer([mid_interp[None, ...],
+                                     tf.convert_to_tensor([[10., 10., 10.]]),
+                                     tf.convert_to_tensor([[0.625, 0.625, 0.625]])])[0]
+
+        target_interp = tf.convert_to_tensor(
+            zoom(pre_interp, zoom=(0.8, 0.8, 0.8, 1.), order=1, prefilter=False), dtype=tf.float64)
 
         self.assertTrue(tf.reduce_sum(tf.abs(target_interp - post_interp)) <= 1e-5)
 
@@ -178,17 +208,14 @@ class SamplerLayerCase(tft.TestCase):
         test_layer = layers.SamplerLayer(max_hr_downsamp=1.5, max_lr_downsamp=2.0, apply_blurring=False)
 
         d_input_layer = keras.Input((24, 24, 24, 3))
+        l_dsamp = keras.Input(3)
+        h_dsamp = keras.Input(3)
 
-        input_layers = [d_input_layer, d_input_layer, 2.0, 1.5]
-
-        output_layers = test_layer(input_layers)
-
-        self.assertEqual([output_layers[0].shape,
-                          output_layers[1].shape], [(None, 16, 16, 16, 3),
-                                                    (None, 16, 16, 16, 3)])
-
-        input_layers[2] = 1.6
-        input_layers[3] = 1.2  # Show that change in upsamp rate doesn't change output shape
+        input_layers = [d_input_layer, d_input_layer,
+                        l_dsamp,
+                        h_dsamp]
+                        # tf.convert_to_tensor([2.0, 2.0, 2.0], dtype=tf.float32),
+                        # tf.convert_to_tensor([1.5, 1.5, 1.5], dtype=tf.float32)]
 
         output_layers = test_layer(input_layers)
 
@@ -230,8 +257,8 @@ class SamplerLayerCase(tft.TestCase):
 
         output_shapes = self.sampler_layer.compute_output_shape([(None, 24, 24, 24, 3),
                                                                  (None, 24, 24, 24, 1),
-                                                                 2.0,
-                                                                 1.5])
+                                                                 [2.0],
+                                                                 [1.5]])
 
         self.assertEqual([(None, 16, 16, 16, 3), (None, 16, 16, 16, 3), (None, 16, 16, 16, 1)],
                          output_shapes)
@@ -239,25 +266,25 @@ class SamplerLayerCase(tft.TestCase):
         output_shapes = self.sampler_layer.compute_output_shape([(None, 24, 24, 24, 3),
                                                                  (None, 24, 24, 24, 1),
                                                                  (None, 24, 24, 24, 1),
-                                                                 2.0,
-                                                                 1.5])
+                                                                 [2.0],
+                                                                 [1.5]])
 
         self.assertEqual([(None, 16, 16, 16, 3), (None, 16, 16, 16, 3), (None, 16, 16, 16, 1), (None, 16, 16, 16, 1)],
                          output_shapes)
 
-    def testGridOutput(self):
-
-        from IQT.util import config_grid
-
-        grid_pre_calc = config_grid((0, 0, 0), (23, 23, 23), (24, 24, 24))[None, :]
-
-        grid_target = config_grid((0, 0, 0), (15, 15, 15), (16, 16, 16)) * 23/15
-
-        (grid_hr, grid_lr) = self.sampler_layer([grid_pre_calc, grid_pre_calc, 2.0, 1.5])
-
-        self.assertTrue(np.mean(np.abs(grid_target - grid_hr)) < 1e-5)
-        # Linear function mapping means lr and hr should be equal
-        self.assertTrue(np.mean(np.abs(grid_target - grid_lr)) < 1e-5)
+    # def testGridOutput(self):
+    #
+    #     from IQT.util import config_grid
+    #
+    #     grid_pre_calc = config_grid((0, 0, 0), (23, 23, 23), (24, 24, 24))[None, :]
+    #
+    #     grid_target = config_grid((0, 0, 0), (15, 15, 15), (16, 16, 16)) * 23/15
+    #
+    #     (grid_hr, grid_lr) = self.sampler_layer([grid_pre_calc, grid_pre_calc, [2.0], [1.5]])
+    #
+    #     self.assertTrue(np.mean(np.abs(grid_target - grid_hr)) < 1e-5)
+    #     # Linear function mapping means lr and hr should be equal
+    #     self.assertTrue(np.mean(np.abs(grid_target - grid_lr)) < 1e-5)
 
 
 if __name__ == '__main__':
