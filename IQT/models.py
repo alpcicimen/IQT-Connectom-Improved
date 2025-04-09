@@ -76,7 +76,8 @@ def config_model(model_type,
 
                     sampler_layer = RandomSamplerLayer(max_hr_downsamp=downsamp_rates[0],
                                                        max_lr_downsamp=downsamp_rates[1],
-                                                       t1_init_downsamp=downsamp_rates[2])
+                                                       t1_init_downsamp=downsamp_rates[2],
+                                                       individual_resampling=True)
 
                     preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
