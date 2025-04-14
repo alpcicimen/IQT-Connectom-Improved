@@ -638,67 +638,69 @@ class BlurLayer(Layer):
 
         self.channels = input_shape[0][-1]  # Initialize it here based on input channels
 
+        @tf.function
+        def __compute_blur_kernel__(downsample_rate):
+            """
+            Computes a gaussian blurring kernel for the convolution operation.
+            The kernel will be of shape [K, K, K, C, C],
+            where K is the shape of the kernel determined by max_kernel_size property.
+
+            This kernel is compatible with the convolution operation for tensorflow for inputs of shape [B, H, W, D, C].
+
+            :param downsample_rate: The downsampling rate determined for blurring.
+            :return: The estimated blurring kernel
+            """
+
+            # Check Billot et al. for more details
+            std_value = tf.convert_to_tensor(2 * np.log(10) / (2 * np.pi), dtype=self.dtype) * downsample_rate
+            kernel_size = tf.cast((tf.math.ceil(2.5 * downsample_rate) / 2), dtype=tf.uint32) * 2 + 1
+
+            # Create a kernel grid for generating the blurring kernel.
+            # Grid should be of shape [K_i, K_i, K_i],
+            # with values ranging from [-K_i//2 : K_i//2]
+            kernel_length = tf.range(-tf.floor(tf.divide(kernel_size, 2)), (tf.floor(tf.divide(kernel_size, 2)) + 1))
+
+            kernel_grid = tf.cast(tf.stack(tf.meshgrid(kernel_length, kernel_length, kernel_length,
+                                                       indexing='ij'), axis=-1), self.dtype)
+
+            # 3D Gaussian distribution
+            gaussian_kernel = 1 / tf.pow(tf.math.sqrt(2. * np.pi) * std_value, 3.) * \
+                              tf.math.exp(-(kernel_grid[..., 0] ** 2 +
+                                            kernel_grid[..., 1] ** 2 +
+                                            kernel_grid[..., 2] ** 2) / (2 * std_value ** 2))
+
+            # To ensure that the convolution does not add an intensity bias
+            gaussian_kernel /= tf.reduce_sum(gaussian_kernel)
+
+            # Our kernel is of shape K_i^3, but we need it to be the size of max_kernel_size. Therefore, we pad with zeros.
+            kernel_pads = tf.math.abs(tf.subtract(tf.convert_to_tensor(self.__max_kernel_size, dtype=tf.int32),
+                                                  tf.cast(kernel_size, tf.int32)))
+
+            paddings = tf.convert_to_tensor([[kernel_pads // 2, kernel_pads // 2],
+                                             [kernel_pads // 2, kernel_pads // 2],
+                                             [kernel_pads // 2, kernel_pads // 2]])
+
+            # Expand the dims to [K, K, K, 1, 1]
+            blur_kernel = tf.pad(gaussian_kernel, paddings=paddings)[..., None, None]
+
+            # Keras convolution kernels are of shape [X, Y, Z, C_i, C_o], where inputs of channel sizes C_i gets convolved
+            # and mapped to channel sizes C_o. For this purpose C_i == C_o == C.
+            #
+            # Due to the blurring operation we need to apply the kernel to each channel separately.
+            # This means that for all channels c in range(0, C) kernel[:, :, :, c_1, c_2] == blur_kernel,
+            # and kernel[:, :, :, c, c] = 0 otherwise.
+            #
+            # The kernel shape has to be [K, K, K, C, C].
+            # Therefore, we expand and repeat the identity matrix [C, C] by K for all directions to obtain [K, K, K, C, C]
+            # We then broadcast the blur kernel [K, K, K, 1, 1] and multiply element-wise to obtain the final kernel.
+            full_kernel = tf.tile(tf.eye(self.channels, self.channels)[None, None, None, :, :],
+                                  [self.__max_kernel_size, self.__max_kernel_size, self.__max_kernel_size, 1, 1])
+
+            return full_kernel * blur_kernel
+
+        self.__compute_blur_kernel__ = __compute_blur_kernel__
+
         return super().build(input_shape)
-
-    @tf.function
-    def __compute_blur_kernel__(self, downsample_rate):
-        """
-        Computes a gaussian blurring kernel for the convolution operation.
-        The kernel will be of shape [K, K, K, C, C],
-        where K is the shape of the kernel determined by max_kernel_size property.
-
-        This kernel is compatible with the convolution operation for tensorflow for inputs of shape [B, H, W, D, C].
-
-        :param downsample_rate: The downsampling rate determined for blurring.
-        :return: The estimated blurring kernel
-        """
-
-        # Check Billot et al. for more details
-        std_value = tf.convert_to_tensor(2 * np.log(10) / (2 * np.pi), dtype=self.dtype) * downsample_rate
-        kernel_size = tf.cast((tf.math.ceil(2.5 * downsample_rate) / 2), dtype=tf.uint32) * 2 + 1
-
-        # Create a kernel grid for generating the blurring kernel.
-        # Grid should be of shape [K_i, K_i, K_i],
-        # with values ranging from [-K_i//2 : K_i//2]
-        kernel_length = tf.range(-tf.floor(tf.divide(kernel_size, 2)), (tf.floor(tf.divide(kernel_size, 2)) + 1))
-
-        kernel_grid = tf.cast(tf.stack(tf.meshgrid(kernel_length, kernel_length, kernel_length,
-                                                   indexing='ij'), axis=-1), self.dtype)
-
-        # 3D Gaussian distribution
-        gaussian_kernel = 1 / tf.pow(tf.math.sqrt(2. * np.pi) * std_value, 3.) * \
-            tf.math.exp(-(kernel_grid[..., 0] ** 2 +
-                          kernel_grid[..., 1] ** 2 +
-                          kernel_grid[..., 2] ** 2) / (2 * std_value ** 2))
-
-        # To ensure that the convolution does not add an intensity bias
-        gaussian_kernel /= tf.reduce_sum(gaussian_kernel)
-
-        # Our kernel is of shape K_i^3, but we need it to be the size of max_kernel_size. Therefore, we pad with zeros.
-        kernel_pads = tf.math.abs(tf.subtract(tf.convert_to_tensor(self.__max_kernel_size, dtype=tf.int32),
-                                              tf.cast(kernel_size, tf.int32)))
-
-        paddings = tf.convert_to_tensor([[kernel_pads // 2, kernel_pads // 2],
-                                         [kernel_pads // 2, kernel_pads // 2],
-                                         [kernel_pads // 2, kernel_pads // 2]])
-
-        # Expand the dims to [K, K, K, 1, 1]
-        blur_kernel = tf.pad(gaussian_kernel, paddings=paddings)[..., None, None]
-
-        # Keras convolution kernels are of shape [X, Y, Z, C_i, C_o], where inputs of channel sizes C_i gets convolved
-        # and mapped to channel sizes C_o. For this purpose C_i == C_o == C.
-        #
-        # Due to the blurring operation we need to apply the kernel to each channel separately.
-        # This means that for all channels c in range(0, C) kernel[:, :, :, c_1, c_2] == blur_kernel,
-        # and kernel[:, :, :, c, c] = 0 otherwise.
-        #
-        # The kernel shape has to be [K, K, K, C, C].
-        # Therefore, we expand and repeat the identity matrix [C, C] by K for all directions to obtain [K, K, K, C, C]
-        # We then broadcast the blur kernel [K, K, K, 1, 1] and multiply element-wise to obtain the final kernel.
-        full_kernel = tf.tile(tf.eye(self.channels, self.channels)[None, None, None, :, :],
-                              [self.__max_kernel_size, self.__max_kernel_size, self.__max_kernel_size, 1, 1])
-
-        return full_kernel * blur_kernel
 
     @tf.function
     def blur(self, input_tensor, blur_rate):
@@ -1031,8 +1033,6 @@ class SameRateSamplerLayer(SamplerLayer):
         """
         Sampling strategy where the upsampling rate between low and high image outputs are constant.
 
-        TODO adapt to new strategy
-
         :param max_hr_downsamp:
         :param downsamp_rate:
         :param t1_init_downsamp:
@@ -1046,7 +1046,10 @@ class SameRateSamplerLayer(SamplerLayer):
 
         max_lr_downsamp = max_hr_downsamp * downsamp_rate
 
-        super().__init__(max_hr_downsamp, max_lr_downsamp, t1_init_downsamp, min_hr_downsamp, apply_blurring, augment,
+        super().__init__(max_hr_downsamp, max_lr_downsamp, t1_init_downsamp,
+                         min_hr_downsamp=min_hr_downsamp,
+                         apply_blurring=apply_blurring,
+                         augment=augment,
                          *args, **kwargs)
 
         self.downsamp_rate = downsamp_rate
@@ -1069,14 +1072,18 @@ class SameRateSamplerLayer(SamplerLayer):
 
         static = self.static or not bool(inputs_hr.shape[0])  # If batch is none just return target shape.
 
+        batch_shape = tf.shape(inputs_hr)[0]
+
         if static:
-            hr_downsamp_rate = tf.convert_to_tensor([self.max_hr_downsamp], dtype=self.dtype)
+            hr_downsamp_rate = tf.ones((batch_shape, 3)) * self.max_hr_downsamp
         elif self.individual_resampling:
-            hr_downsamp_rate = tf.random.uniform([inputs_hr.shape[0]],
+            hr_downsamp_rate = tf.random.uniform([batch_shape, 1],
                                                  self.min_hr_downsamp, self.max_hr_downsamp,
-                                                 dtype=self.dtype)
+                                                 dtype=self.dtype) * tf.convert_to_tensor([1., 1., 1.])
         else:
-            hr_downsamp_rate = tf.random.uniform([1], self.min_hr_downsamp, self.max_hr_downsamp, dtype=self.dtype)
+            hr_downsamp_rate = tf.ones((batch_shape, 3)) * tf.random.uniform([1, 1],
+                                                                             self.min_hr_downsamp, self.max_hr_downsamp,
+                                                                             dtype=self.dtype)
 
         lr_downsamp_rate = hr_downsamp_rate * self.downsamp_rate
 
@@ -1094,8 +1101,6 @@ class ListSamplerLayer(SamplerLayer):
                  augment=True, *args, **kwargs):
         """
         Sampling strategy where the low and high-res rates are selected from a list of deterministic values.
-
-        TODO update to new strategy
 
         :param hr_downsamp_rates:
         :param lr_downsamp_rates:
@@ -1130,23 +1135,25 @@ class ListSamplerLayer(SamplerLayer):
         inputs_t1 = None if len(inputs) < 2 else inputs[1]
         inputs_mask = None if len(inputs) < 3 else inputs[2]
 
+        batch_shape = tf.shape(inputs_hr)[0]
+
         if not bool(inputs_hr.shape[0]):  # If batch is none just return target shape.
-            hr_downsamp_rate = tf.convert_to_tensor([self.max_hr_downsamp])
+            hr_downsamp_rate = tf.ones((batch_shape, 3)) * self.max_hr_downsamp
         elif self.individual_resampling:
             hr_downsamp_rate = tf.convert_to_tensor(random.choices(self.hr_downsamp_rates, k=inputs_hr.shape[0]),
-                                                    dtype=self.dtype)
+                                                    dtype=self.dtype)[:, None] * tf.convert_to_tensor([1., 1., 1.])
         else:
             hr_downsamp_rate = tf.convert_to_tensor([random.choice(self.hr_downsamp_rates)],
-                                                    dtype=self.dtype)
+                                                    dtype=self.dtype) * tf.ones([batch_shape, 3])
 
         if not bool(inputs_lr.shape[0]):  # If batch is none just return target shape.
-            lr_downsamp_rate = tf.convert_to_tensor([self.max_lr_downsamp])
+            lr_downsamp_rate = tf.ones((batch_shape, 3)) * self.max_lr_downsamp
         elif self.individual_resampling:
             lr_downsamp_rate = tf.convert_to_tensor(random.choices(self.lr_downsamp_rates, k=inputs_lr.shape[0]),
-                                                    dtype=self.dtype)
+                                                    dtype=self.dtype)[:, None] * tf.convert_to_tensor([1., 1., 1.])
         else:
             lr_downsamp_rate = tf.convert_to_tensor([random.choice(self.lr_downsamp_rates)],
-                                                    dtype=self.dtype)
+                                                    dtype=self.dtype) * tf.ones([batch_shape, 3])
 
         return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
                              lr_downsamp_rate, hr_downsamp_rate], *args, **kwargs)
