@@ -13,18 +13,20 @@ def config_model(model_type,
                  target_patch_size=16,
                  downsamp_rates: Sequence[float, float, float] = (1.6, 3.0, 1.25 / 0.7),
                  diff_channel_size=6,
-                 train_preprocessors: List[Literal["dti",
-                                                   "map",
-                                                   "dynamic_rescale",
-                                                   "static_rate_rescale",
-                                                   "list_rescale",
-                                                   "normalize_map",
-                                                   "normalize_dti"]] = [],
+                 train_preprocessors: None | List[Literal["dti",
+                                                          "map",
+                                                          "dynamic_rescale",
+                                                          "static_rate_rescale",
+                                                          "list_rescale",
+                                                          "normalize_map",
+                                                          "normalize_dti"]] = None,
+                 individual_resampling=True,
+                 augment=True,
                  weights_dir: None | str | os.PathLike[str] = None):
 
     diff_recon_ch_size = diff_channel_size  # Placeholder
 
-    if len(train_preprocessors) > 0:
+    if train_preprocessors is not None:
 
         kernel_penalty_diff = np.int32(np.ceil(2.5 * downsamp_rates[1]) / 2) * 2
         kernel_penalty_t1 = np.int32(np.ceil(2.5 * downsamp_rates[2] * downsamp_rates[0]) / 2) * 2
@@ -77,7 +79,11 @@ def config_model(model_type,
                     sampler_layer = RandomSamplerLayer(max_hr_downsamp=downsamp_rates[0],
                                                        max_lr_downsamp=downsamp_rates[1],
                                                        t1_init_downsamp=downsamp_rates[2],
-                                                       individual_resampling=True)
+                                                       individual_resampling=individual_resampling,
+                                                       augment=augment,
+                                                       target_shape=(target_patch_size,
+                                                                     target_patch_size,
+                                                                     target_patch_size))
 
                     preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
@@ -85,7 +91,12 @@ def config_model(model_type,
 
                     sampler_layer = SameRateSamplerLayer(max_hr_downsamp=downsamp_rates[0],
                                                          downsamp_rate=downsamp_rates[1]/downsamp_rates[0],
-                                                         t1_init_downsamp=downsamp_rates[2])
+                                                         t1_init_downsamp=downsamp_rates[2],
+                                                         individual_resampling=individual_resampling,
+                                                         augment=augment,
+                                                         target_shape=(target_patch_size,
+                                                                       target_patch_size,
+                                                                       target_patch_size))
 
                     preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
@@ -93,7 +104,12 @@ def config_model(model_type,
 
                     sampler_layer = ListSamplerLayer(hr_downsamp_rates=[downsamp_rates[0]],
                                                      lr_downsamp_rates=[1.25, 1.5, 2.0, 2.5],
-                                                     t1_init_downsamp=downsamp_rates[2])
+                                                     t1_init_downsamp=downsamp_rates[2],
+                                                     individual_resampling=individual_resampling,
+                                                     augment=augment,
+                                                     target_shape=(target_patch_size,
+                                                                   target_patch_size,
+                                                                   target_patch_size))
 
                     preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
@@ -185,7 +201,7 @@ def config_model(model_type,
         case _:
             raise ValueError(f"No model configuration for \"{model_type}\" found!")
 
-    if len(train_preprocessors) > 0:
+    if train_preprocessors is not None:
         model += [lr_patch, hr_patch, t1_patch]
 
         model = keras.Model(model_inputs, model)

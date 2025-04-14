@@ -112,6 +112,8 @@ def main(model_type,
          map_metric_dir,
          cluster_mode,
          preproc_steps,
+         augment,
+         individual_resampling,
          batch_size,
          lr,
          lr_decay,
@@ -128,7 +130,9 @@ def main(model_type,
                          diff_channel_size=
                          108 if diffusion_model == 'dti'
                          else 288,
-                         train_preprocessors=preproc_steps)
+                         train_preprocessors=preproc_steps,
+                         augment=augment,
+                         individual_resampling=individual_resampling)
 
     loss_best = tf.Variable(tf.float32.max)
 
@@ -348,6 +352,9 @@ if __name__ == '__main__':
                         default=["dynamic_rescale",
                                  "dti",
                                  "normalize_dti"])
+
+    parser.add_argument('--augment', type=bool, default=False)
+    parser.add_argument('--individual_resampling', type=bool, default=False)
 
     parser.add_argument('--log_dir', type=str,
                         default='/home/acicimen/IQT-Connectom-Improved/logs/run_results')
