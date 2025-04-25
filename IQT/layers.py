@@ -521,7 +521,7 @@ class SamplingLayer(Layer):
                                       tf.TensorSpec(shape=[None, 3, ], dtype=self.dtype),
                                       tf.TensorSpec(shape=[None, 3, ], dtype=self.dtype),
                                       tf.TensorSpec(shape=[3, ], dtype=tf.int32)))
-        def __config_grid__(input_shape, input_size, s_rate, end_shape):
+        def config_grid(input_shape, input_size, s_rate, end_shape):
 
             end_shape_f = tf.cast(end_shape, dtype=self.dtype)
 
@@ -552,7 +552,7 @@ class SamplingLayer(Layer):
             return igrid
 
         @tf.function(reduce_retracing=True)
-        def __gen_ugrid_udiff__(inputs, igrid):
+        def gen_ugrid_udiff(inputs, igrid):
 
             max_mask = tf.ones(tf.shape(igrid), dtype=self.dtype) * tf.cast(tf.shape(inputs)[1:-1] - 1, self.dtype)
 
@@ -586,8 +586,8 @@ class SamplingLayer(Layer):
 
             return ugrids_out.stack(), udiffs.stack()
 
-        self.__config_grid__ = __config_grid__
-        self.__gen_ugrid_udiff__ = __gen_ugrid_udiff__
+        self.__config_grid__ = config_grid
+        self.__gen_ugrid_udiff__ = gen_ugrid_udiff
 
     def __init__(self, end_shape,
                  method: Literal["nearest", "trilinear"] = "trilinear",
@@ -631,7 +631,7 @@ class BlurLayer(Layer):
                  *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.__max_kernel_size = max_kernel_size
+        self.__max_kernel_size__ = max_kernel_size
         self.channels = None
         self.blur_limit = blur_limit
 
@@ -639,8 +639,10 @@ class BlurLayer(Layer):
 
         self.channels = input_shape[0][-1]  # Initialize it here based on input channels
 
+        max_kernel_size = self.__max_kernel_size__
+
         @tf.function
-        def __compute_blur_kernel__(downsample_rate):
+        def compute_blur_kernel(downsample_rate):
             """
             Computes a gaussian blurring kernel for the convolution operation.
             The kernel will be of shape [K, K, K, C, C],
@@ -674,7 +676,7 @@ class BlurLayer(Layer):
             gaussian_kernel /= tf.reduce_sum(gaussian_kernel)
 
             # Our kernel is of shape K_i^3, but we need it to be the size of max_kernel_size. Therefore, we pad with zeros.
-            kernel_pads = tf.math.abs(tf.subtract(tf.convert_to_tensor(self.__max_kernel_size, dtype=tf.int32),
+            kernel_pads = tf.math.abs(tf.subtract(tf.convert_to_tensor(max_kernel_size, dtype=tf.int32),
                                                   tf.cast(kernel_size, tf.int32)))
 
             paddings = tf.convert_to_tensor([[kernel_pads // 2, kernel_pads // 2],
@@ -695,11 +697,11 @@ class BlurLayer(Layer):
             # Therefore, we expand and repeat the identity matrix [C, C] by K for all directions to obtain [K, K, K, C, C]
             # We then broadcast the blur kernel [K, K, K, 1, 1] and multiply element-wise to obtain the final kernel.
             full_kernel = tf.tile(tf.eye(self.channels, self.channels)[None, None, None, :, :],
-                                  [self.__max_kernel_size, self.__max_kernel_size, self.__max_kernel_size, 1, 1])
+                                  [max_kernel_size, max_kernel_size, max_kernel_size, 1, 1])
 
             return full_kernel * blur_kernel
 
-        self.__compute_blur_kernel__ = __compute_blur_kernel__
+        self.__compute_blur_kernel__ = compute_blur_kernel
 
         return super().build(input_shape)
 
@@ -711,9 +713,9 @@ class BlurLayer(Layer):
         ret = tf.cond(tf.less_equal(blur_rate, self.blur_limit),  # Do not blur at certain rates
                       lambda: input_tensor[
                               :,
-                              self.__max_kernel_size // 2:input_tensor_shape[1] - self.__max_kernel_size // 2,
-                              self.__max_kernel_size // 2:input_tensor_shape[2] - self.__max_kernel_size // 2,
-                              self.__max_kernel_size // 2:input_tensor_shape[3] - self.__max_kernel_size // 2,
+                              self.__max_kernel_size__ // 2:input_tensor_shape[1] - self.__max_kernel_size__ // 2,
+                              self.__max_kernel_size__ // 2:input_tensor_shape[2] - self.__max_kernel_size__ // 2,
+                              self.__max_kernel_size__ // 2:input_tensor_shape[3] - self.__max_kernel_size__ // 2,
                               :],
                       lambda: tf.nn.convolution(input_tensor, self.__compute_blur_kernel__(blur_rate)))
 
@@ -946,6 +948,7 @@ class RandomSamplerLayer(SamplerLayer):
 
     def __init__(self, max_hr_downsamp, max_lr_downsamp, t1_init_downsamp=1.,
                  min_hr_downsamp=1.,
+                 min_lr_downsamp=1.25,
                  static_hr=False,
                  static_lr=False,
                  apply_blurring=True,
@@ -970,6 +973,8 @@ class RandomSamplerLayer(SamplerLayer):
         super().__init__(max_hr_downsamp, max_lr_downsamp, t1_init_downsamp, min_hr_downsamp,
                          apply_blurring=apply_blurring, augment=augment,
                          *args, **kwargs)
+
+        self.min_lr_downsamp = min_lr_downsamp
 
         self.static_hr = static_hr
         self.static_lr = static_lr
@@ -1002,21 +1007,25 @@ class RandomSamplerLayer(SamplerLayer):
                                                           self.min_hr_downsamp, self.max_hr_downsamp,
                                                           dtype=self.dtype), repeats=3, axis=-1)
         else:
-            hr_downsamp_rate = tf.ones((batch_shape, 3)) * rand_gen.uniform([1, 1],
-                                                                            self.min_hr_downsamp, self.max_hr_downsamp,
-                                                                            dtype=self.dtype)
+            hr_downsamp_rate = (tf.ones((batch_shape, 3)) *
+                                rand_gen.uniform([1, 1],
+                                                 self.min_hr_downsamp, self.max_hr_downsamp,
+                                                 dtype=self.dtype))
 
         if static_lr:
             lr_downsamp_rate = tf.repeat(tf.convert_to_tensor([[self.max_lr_downsamp] * 3], dtype=self.dtype),
                                          batch_shape, axis=0)
         elif self.individual_resampling:
-            lr_downsamp_rate = tf.repeat(rand_gen.uniform([batch_shape, 1],
-                                                          hr_downsamp_rate[0, 0], self.max_lr_downsamp,
-                                                          dtype=self.dtype), repeats=3, axis=-1)
+            lr_downsamp_rate = tf.repeat(rand_gen.uniform([batch_shape],
+                                                          tf.maximum(hr_downsamp_rate[:, 0], self.min_lr_downsamp),
+                                                          self.max_lr_downsamp,
+                                                          dtype=self.dtype)[:, None], repeats=3, axis=-1)
         else:
-            lr_downsamp_rate = tf.ones((batch_shape, 3)) * rand_gen.uniform([1],
-                                                                            hr_downsamp_rate[0], self.max_lr_downsamp,
-                                                                            dtype=self.dtype)
+            lr_downsamp_rate = (tf.ones((batch_shape, 3)) *
+                                rand_gen.uniform([1],
+                                                 tf.maximum(hr_downsamp_rate[0], self.max_lr_downsamp),
+                                                 self.max_lr_downsamp,
+                                                 dtype=self.dtype))
 
         return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
                              lr_downsamp_rate, hr_downsamp_rate], *args, **kwargs)
@@ -1121,6 +1130,9 @@ class ListSamplerLayer(SamplerLayer):
         self.hr_downsamp_rates = hr_downsamp_rates
         self.lr_downsamp_rates = lr_downsamp_rates
 
+        self.log_probs_hr = tf.math.log([[1 / len(self.hr_downsamp_rates)] * len(self.hr_downsamp_rates)])
+        self.log_probs_lr = tf.math.log([[1 / len(self.lr_downsamp_rates)] * len(self.lr_downsamp_rates)])
+
     def get_config(self):
         config = super().get_config()
 
@@ -1141,20 +1153,24 @@ class ListSamplerLayer(SamplerLayer):
         if not bool(inputs_hr.shape[0]):  # If batch is none just return target shape.
             hr_downsamp_rate = tf.ones((batch_shape, 3)) * self.max_hr_downsamp
         elif self.individual_resampling:
-            hr_downsamp_rate = tf.convert_to_tensor(random.choices(self.hr_downsamp_rates, k=inputs_hr.shape[0]),
-                                                    dtype=self.dtype)[:, None] * tf.convert_to_tensor([1., 1., 1.])
+            indices = tf.transpose(tf.random.categorical(self.log_probs_hr, batch_shape)) * [1, 1, 1]
+            hr_downsamp_rate = tf.gather(self.hr_downsamp_rates, indices)
+
         else:
-            hr_downsamp_rate = tf.convert_to_tensor([random.choice(self.hr_downsamp_rates)],
-                                                    dtype=self.dtype) * tf.ones([batch_shape, 3])
+            indices = tf.transpose(tf.random.categorical(self.log_probs_hr, 1)) * tf.ones([batch_shape, 3],
+                                                                                          dtype=tf.int64)
+            hr_downsamp_rate = tf.gather(self.hr_downsamp_rates, indices)
 
         if not bool(inputs_lr.shape[0]):  # If batch is none just return target shape.
             lr_downsamp_rate = tf.ones((batch_shape, 3)) * self.max_lr_downsamp
         elif self.individual_resampling:
-            lr_downsamp_rate = tf.convert_to_tensor(random.choices(self.lr_downsamp_rates, k=inputs_lr.shape[0]),
-                                                    dtype=self.dtype)[:, None] * tf.convert_to_tensor([1., 1., 1.])
+            indices = tf.transpose(tf.random.categorical(self.log_probs_lr, batch_shape)) * [1, 1, 1]
+            lr_downsamp_rate = tf.gather(self.lr_downsamp_rates, indices)
+
         else:
-            lr_downsamp_rate = tf.convert_to_tensor([random.choice(self.lr_downsamp_rates)],
-                                                    dtype=self.dtype) * tf.ones([batch_shape, 3])
+            indices = tf.transpose(tf.random.categorical(self.log_probs_lr, 1)) * tf.ones([batch_shape, 3],
+                                                                                          dtype=tf.int64)
+            lr_downsamp_rate = tf.gather(self.lr_downsamp_rates, indices)
 
         return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
                              lr_downsamp_rate, hr_downsamp_rate], *args, **kwargs)
