@@ -1,7 +1,5 @@
 import random
 
-from IQT.util import get_interpolate_tf
-
 import keras.backend as K
 import keras.src.backend
 import tensorflow as tf
@@ -586,6 +584,38 @@ class SamplingLayer(Layer):
 
             return ugrids_out.stack(), udiffs.stack()
 
+        @tf.function(input_signature=(tf.TensorSpec(shape=[8, None,
+                                                           self.end_shape[0],
+                                                           self.end_shape[1],
+                                                           self.end_shape[2], None],
+                                                    dtype=self.dtype),
+                                      tf.TensorSpec(shape=[8, None,
+                                                           self.end_shape[0],
+                                                           self.end_shape[1],
+                                                           self.end_shape[2], 3],
+                                                    dtype=self.dtype)))
+        def interpolate_tf(vals, weights):
+            c00 = tf.math.add(tf.multiply(vals[0], weights[0][..., 2, None]),
+                              tf.multiply(vals[1], weights[1][..., 2, None]))
+            c01 = tf.math.add(tf.multiply(vals[2], weights[2][..., 2, None]),
+                              tf.multiply(vals[3], weights[3][..., 2, None]))
+            c10 = tf.math.add(tf.multiply(vals[4], weights[4][..., 2, None]),
+                              tf.multiply(vals[5], weights[5][..., 2, None]))
+            c11 = tf.math.add(tf.multiply(vals[6], weights[6][..., 2, None]),
+                              tf.multiply(vals[7], weights[7][..., 2, None]))
+
+            c0 = tf.add(tf.multiply(c00, weights[0][..., 1, None]),
+                        tf.multiply(c01, weights[2][..., 1, None]))
+            c1 = tf.add(tf.multiply(c10, weights[4][..., 1, None]),
+                        tf.multiply(c11, weights[6][..., 1, None]))
+
+            result = tf.add(tf.multiply(c0, weights[0][..., 0, None]),
+                            tf.multiply(c1, weights[4][..., 0, None]))
+
+            return result
+
+        self.interpolate = interpolate_tf
+
         self.__config_grid__ = config_grid
         self.__gen_ugrid_udiff__ = gen_ugrid_udiff
 
@@ -604,7 +634,6 @@ class SamplingLayer(Layer):
         self.end_shape = end_shape
         self.indep_batch = indep_batch
 
-        self.interpolate = get_interpolate_tf(self.end_shape, self.dtype)
         self.__gen_internal_funcs__()
 
     def call(self, inputs, *args, **kwargs):
