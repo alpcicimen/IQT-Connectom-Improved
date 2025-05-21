@@ -26,7 +26,7 @@ def config_model(model_type,
 
     diff_recon_ch_size = diff_channel_size  # Placeholder
 
-    if train_preprocessors is not None:
+    if train_preprocessors is not None and len(train_preprocessors) > 0:
 
         kernel_penalty_diff = np.int32(np.ceil(2.5 * downsamp_rates[1]) / 2) * 2
         kernel_penalty_t1 = np.int32(np.ceil(2.5 * downsamp_rates[2] * downsamp_rates[0]) / 2) * 2
@@ -201,7 +201,7 @@ def config_model(model_type,
         case _:
             raise ValueError(f"No model configuration for \"{model_type}\" found!")
 
-    if train_preprocessors is not None:
+    if train_preprocessors is not None and len(train_preprocessors) > 0:
         model += [lr_patch, hr_patch, t1_patch]
 
         model = keras.Model(model_inputs, model)
