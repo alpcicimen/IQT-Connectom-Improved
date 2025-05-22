@@ -70,11 +70,15 @@ class InterpolationCase(npt.TestCase):
 
         img = util.config_grid((40, 50, 80), (60, 70, 100), (20, 20, 20))
 
-        img_orig = util.config_grid((40*2.5, 50*2.5, 80*2.5), (40*2.5 + 50, 50*2.5 + 50, 80*2.5 + 50), (50, 50, 50))
+        img_orig = util.config_grid(np.array([40, 50, 80])*2.5,
+                                    np.array([40, 50, 80])*2.5 + 50,
+                                    (50, 50, 50))
 
-        grid = util.config_grid((0, 0, 0), (20, 20, 20), (20, 20, 20)) * 2.5
+        grid = util.config_grid(np.array([0, 0, 0]),
+                                np.array([20, 20, 20]) * 2.5 - 1.,
+                                (20, 20, 20))
 
-        npt.assert_array_equal(img * 2.5, util.gridded_interpolation(img_orig, grid))
+        npt.assert_allclose(img * 2.5, util.gridded_interpolation(img_orig, grid))
 
     # def testInterp(self):
     #

@@ -418,11 +418,11 @@ def apply_gaussian_filter(input_img: NDArray[float], downsample_rate) -> NDArray
                          for channel in np.moveaxis(input_img, -1, 0)], axis=-1)
 
 
-def config_grid(start, end, length: Tuple[int, int, int]):
+def config_grid(start, end, length: Tuple[int, int, int], dtype=np.float32):
 
-    range_x = np.linspace(start[0], end[0], length[0], dtype=np.float32)
-    range_y = np.linspace(start[1], end[1], length[1], dtype=np.float32)
-    range_z = np.linspace(start[2], end[2], length[2], dtype=np.float32)
+    range_x = np.linspace(start[0], end[0], length[0], dtype=dtype)
+    range_y = np.linspace(start[1], end[1], length[1], dtype=dtype)
+    range_z = np.linspace(start[2], end[2], length[2], dtype=dtype)
 
     grid = np.stack(np.meshgrid(range_x, range_y, range_z,
                                 indexing='ij'), axis=-1)  # mgrid doesn't work very well due to ieee754 inaccuracy
@@ -430,15 +430,16 @@ def config_grid(start, end, length: Tuple[int, int, int]):
     return grid
 
 
-def gridded_interpolation(image: NDArray[float], grid: NDArray[float]) -> NDArray[float]:
+def gridded_interpolation(image: NDArray[np.float32], grid: NDArray[np.float32]) -> NDArray[np.float32]:
 
     max_sizes = np.array(image.shape[:-1]) - 1
 
     lgrid = np.floor(grid)
-    ugrids = [np.clip((lgrid + [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)]).astype(int),
-                      a_min=0, a_max=max_sizes, dtype=int) for i in range(8)]
+    ugrids = [(lgrid + [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)]).astype(np.int32) for i in range(8)]
 
     udiffs = [1. - np.abs(ugrids[i] - grid) for i in range(8)]
+
+    ugrids = [np.clip(ugrids[i], a_min=0, a_max=max_sizes, dtype=np.int32) for i in range(8)]
 
     out_img = [[] for _ in range(3)]
 
