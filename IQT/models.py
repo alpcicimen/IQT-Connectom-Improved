@@ -20,11 +20,13 @@ def config_model(model_type,
                                                           "list_rescale",
                                                           "normalize_map",
                                                           "normalize_dti"]] = None,
+                 individual_resampling=True,
+                 augment=True,
                  weights_dir: None | str | os.PathLike[str] = None):
 
     diff_recon_ch_size = diff_channel_size  # Placeholder
 
-    if train_preprocessors is not None:
+    if train_preprocessors is not None and len(train_preprocessors) > 0:
 
         kernel_penalty_diff = np.int32(np.ceil(2.5 * downsamp_rates[1]) / 2) * 2
         kernel_penalty_t1 = np.int32(np.ceil(2.5 * downsamp_rates[2] * downsamp_rates[0]) / 2) * 2
@@ -68,7 +70,12 @@ def config_model(model_type,
 
                     sampler_layer = RandomSamplerLayer(max_hr_downsamp=downsamp_rates[0],
                                                        max_lr_downsamp=downsamp_rates[1],
-                                                       t1_init_downsamp=downsamp_rates[2])
+                                                       t1_init_downsamp=downsamp_rates[2],
+                                                       individual_resampling=individual_resampling,
+                                                       augment=augment,
+                                                       target_shape=(target_patch_size,
+                                                                     target_patch_size,
+                                                                     target_patch_size))
 
                     preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
@@ -76,7 +83,12 @@ def config_model(model_type,
 
                     sampler_layer = SameRateSamplerLayer(max_hr_downsamp=downsamp_rates[0],
                                                          downsamp_rate=downsamp_rates[1]/downsamp_rates[0],
-                                                         t1_init_downsamp=downsamp_rates[2])
+                                                         t1_init_downsamp=downsamp_rates[2],
+                                                         individual_resampling=individual_resampling,
+                                                         augment=augment,
+                                                         target_shape=(target_patch_size,
+                                                                       target_patch_size,
+                                                                       target_patch_size))
 
                     preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
@@ -84,7 +96,12 @@ def config_model(model_type,
 
                     sampler_layer = ListSamplerLayer(hr_downsamp_rates=[1.0],
                                                      lr_downsamp_rates=[1.25, 1.5, 2.0, 2.5],
-                                                     t1_init_downsamp=downsamp_rates[2])
+                                                     t1_init_downsamp=downsamp_rates[2],
+                                                     individual_resampling=individual_resampling,
+                                                     augment=augment,
+                                                     target_shape=(target_patch_size,
+                                                                   target_patch_size,
+                                                                   target_patch_size))
 
                     preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
@@ -176,7 +193,7 @@ def config_model(model_type,
         case _:
             raise ValueError(f"No model configuration for \"{model_type}\" found!")
 
-    if train_preprocessors is not None:
+    if train_preprocessors is not None and len(train_preprocessors) > 0:
         model += [lr_patch, hr_patch, t1_patch]
 
         model = keras.Model(model_inputs, model)
@@ -258,10 +275,10 @@ def unet3d_t1_v2(i_layer, t1_layer, diff_ch_size=6):
         Average()([t1_d_layer2, d_layer2]))
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
-                                      concat_layer=Concatenate(axis=4)([d_layer1, t1_d_layer1]),
+                                      concat_layer=[d_layer1, t1_d_layer1],
                                       filter_size=diff_ch_size * 4 * 4, kernel_size=3)
     u_layer2 = unet_upsample_layer_v2(u_layer1,
-                                      concat_layer=Concatenate(axis=4)([conv_input, t1_input]),
+                                      concat_layer=[conv_input, t1_input],
                                       filter_size=diff_ch_size * 4, kernel_size=3)
 
     o_layer = Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same')(u_layer2)
@@ -352,10 +369,10 @@ def unet3d_pre_fusion_v2(i_layer, t1_layer, diff_ch_size=6):
                             BatchNormalization()])(d_layer2)
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
-                                      concat_layer=d_layer1,
+                                      concat_layer=[d_layer1],
                                       filter_size=(diff_ch_size + 1) * 4 * 4, kernel_size=3)
     u_layer2 = unet_upsample_layer_v2(u_layer1,
-                                      concat_layer=conv_input,
+                                      concat_layer=[conv_input],
                                       filter_size=(diff_ch_size + 1) * 4, kernel_size=3)
 
     o_layer = Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same')(u_layer2)
@@ -386,10 +403,10 @@ def unet3d_not1_v2(i_layer, diff_ch_size=6):
                             BatchNormalization()])(d_layer2)
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
-                                      concat_layer=d_layer1,
+                                      concat_layer=[d_layer1],
                                       filter_size=diff_ch_size * 4 * 4, kernel_size=3)
     u_layer2 = unet_upsample_layer_v2(u_layer1,
-                                      concat_layer=conv_input,
+                                      concat_layer=[conv_input],
                                       filter_size=diff_ch_size * 4, kernel_size=3)
 
     o_layer = Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same')(u_layer2)

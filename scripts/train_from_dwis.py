@@ -1,7 +1,6 @@
 import argparse
 import os.path
 
-import keras.optimizers.schedules
 from tensorflow import keras
 from tensorflow.keras.optimizers.schedules import ExponentialDecay, PiecewiseConstantDecay, LearningRateSchedule
 
@@ -110,6 +109,8 @@ def main(model_type,
          map_metric_dir,
          cluster_mode,
          preproc_steps,
+         augment,
+         individual_resampling,
          batch_size,
          lr,
          lr_decay,
@@ -125,7 +126,9 @@ def main(model_type,
                          diff_channel_size=
                          108 if diffusion_model == 'dti'
                          else 288,
-                         train_preprocessors=preproc_steps)
+                         train_preprocessors=preproc_steps,
+                         augment=augment,
+                         individual_resampling=individual_resampling)
 
     loss_best = tf.float32.max
 
@@ -307,15 +310,18 @@ if __name__ == '__main__':
                         choices=["dynamic_rescale", "static_rate_rescale", "list_rescale",
                                  "dti", "map",
                                  "normalize_dti", "normalize_map"],
-                        default=["list_rescale",
+                        default=["dynamic_rescale",
                                  "dti",
                                  "normalize_dti"])
+
+    parser.add_argument('--augment', type=bool, default=False)
+    parser.add_argument('--individual_resampling', type=bool, default=False)
 
     parser.add_argument('--log_dir', type=str,
                         default='/home/acicimen/IQT-Connectom-Improved/logs/run_results')
 
     parser.add_argument('--dwi_data_dir',
-                        default='/SAN/vision/hcp/DCA_HCP.2013.3_Proc')
+                        default='/SAN/vision/hcpstatic/HCP.2013.3')
     parser.add_argument('--t1_data_dir',
                         default='/cluster/project0/IQT_Nigeria/HCP_t1t2_ALL/sim')
 
@@ -350,24 +356,21 @@ if __name__ == '__main__':
                         default=["101915", "102816", "103818", "105115", "105216", "106319", "111312", "111716",
                                  "113215", "113619", "115320", "117122", "118932", "120212", "122317", "123117",
                                  "124422", "125525", "128632", "129028", "130316", "131924", "133827", "133928",
-                                 "135932", "137128", "138231", "138534", "139637", "142828", "143325", "144226",
-                                 "148032", "148335", "150423", "150524", "151223", "151526", "151627", "153025",
-                                 "153429", "154431", "156233", "156637", "158540", "159239", "161731", "162329",
-                                 "163129", "167743", "175439", "176542", "185139", "188347", "190031", "191437",
-                                 "192439", "195647", "196750", "197550", "198451", "199150", "199655", "201111",
-                                 "201414", "205119", "205826", "211417", "212318", "214221", "217126", "239944",
-                                 "245333", "246133", "249947", "255639", "280739", "284646", "298051", "329440",
-                                 "355239", "397760", "429040", "448347", "497865", "499566", "541943", "545345",
-                                 "579665", "581349", "645551", "665254", "677968", "680957", "685058", "688569",
-                                 "702133", "713239", "715647", "729557", "734045", "748258", "756055", "761957",
-                                 "788876", "826353", "856766", "857263", "859671", "861456", "871964", "889579",
-                                 "894673", "896879", "899885", "901139", "904044", "917255", "932554", "937160",
-                                 "951457", "414229"])
+                                 "135932", "138231", "138534", "139637", "143325", "144226", "148032", "148335",
+                                 "151223", "151526", "151627", "153025", "153429", "154431", "156233", "156637",
+                                 "158540", "159239", "161731", "162329", "163129", "175439", "176542", "185139",
+                                 "188347", "190031", "191437", "195647", "196750", "198451", "199150", "199655",
+                                 "201111", "201414", "205119", "205826", "211417", "212318", "214221", "217126",
+                                 "239944", "245333", "246133", "255639", "280739", "284646", "298051", "397760",
+                                 "429040", "448347", "497865", "499566", "541943", "545345", "581349", "645551",
+                                 "665254", "677968", "680957", "685058", "688569", "702133", "713239", "715647",
+                                 "729557", "734045", "748258", "756055", "761957", "788876", "826353", "856766",
+                                 "857263", "859671", "861456", "871964", "889579", "894673", "896879", "899885",
+                                 "901139", "904044", "917255", "932554", "937160", "414229"])
 
     parser.add_argument('--validation_subjects', nargs='+',
-                        default=["169343", "163432", "390645", "250427", "211720", "704238", "705341", "165840",
-                                 "210617", "103414", "792564", "209935", "182840", "205725", "753251", "118730",
-                                 "561242"])
+                        default=["169343", "390645", "250427", "211720", "704238", "705341", "165840", "210617",
+                                 "103414", "792564", "209935", "182840", "205725", "118730", "561242"])
 
     parser.add_argument('--patch_size', type=int, default=16)
     parser.add_argument('--patch_spacing', type=int, default=12)
@@ -375,7 +378,7 @@ if __name__ == '__main__':
     #  Unfortunately bash does not natively support floating point operations, so a possible workaround would be to
     #  calculate the proper floating point before supplying it as a command-line argument.
     parser.add_argument('--lr_downsampling_max_rate', type=float, default=2.5)
-    parser.add_argument('--hr_downsampling_max_rate', type=float, default=1.6)
+    parser.add_argument('--hr_downsampling_max_rate', type=float, default=1.)
     parser.add_argument('--t1_dwi_rate', type=float, default=1.25/0.7)
 
     # parser.add_argument('--clip_strategy', type=str, default='constant')

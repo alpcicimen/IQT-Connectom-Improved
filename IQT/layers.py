@@ -491,129 +491,156 @@ class MAPMRIFitLayer(Layer):
 
 class SamplingLayer(Layer):
 
-    @staticmethod
-    @tf.function
-    def __interpolate__(vals, weights):
-
-        c00 = tf.math.add(tf.multiply(vals[0], weights[0][..., 2, None]),
-                          tf.multiply(vals[1], weights[1][..., 2, None]))
-        c01 = tf.math.add(tf.multiply(vals[2], weights[2][..., 2, None]),
-                          tf.multiply(vals[3], weights[3][..., 2, None]))
-        c10 = tf.math.add(tf.multiply(vals[4], weights[4][..., 2, None]),
-                          tf.multiply(vals[5], weights[5][..., 2, None]))
-        c11 = tf.math.add(tf.multiply(vals[6], weights[6][..., 2, None]),
-                          tf.multiply(vals[7], weights[7][..., 2, None]))
-
-        c0 = tf.add(tf.multiply(c00, weights[0][..., 1, None]),
-                    tf.multiply(c01, weights[2][..., 1, None]))
-        c1 = tf.add(tf.multiply(c10, weights[4][..., 1, None]),
-                    tf.multiply(c11, weights[6][..., 1, None]))
-
-        result = tf.add(tf.multiply(c0, weights[0][..., 0, None]),
-                        tf.multiply(c1, weights[4][..., 0, None]))
-
-        return result
-
-    def __config_grid__(self, input_shape):
-
-        dim_0 = tf.cast(tf.round(
-            tf.divide(tf.cast(input_shape[1], dtype=self.dtype), self._dsamp_rate[0])),
-            dtype=tf.uint32)
-
-        dim_1 = tf.cast(tf.round(
-            tf.divide(tf.cast(input_shape[2], dtype=self.dtype), self._dsamp_rate[1])),
-            dtype=tf.uint32)
-
-        dim_2 = tf.cast(tf.round(
-            tf.divide(tf.cast(input_shape[3], dtype=self.dtype), self._dsamp_rate[2])),
-            dtype=tf.uint32)
-
-        igrid = tf.cast(tf.stack(tf.meshgrid(tf.linspace(0, tf.subtract(input_shape[1], 1), dim_0),
-                                             tf.linspace(0, tf.subtract(input_shape[2], 1), dim_1),
-                                             tf.linspace(0, tf.subtract(input_shape[3], 1), dim_2),
-                                             indexing='ij'), axis=-1), self.dtype)
-
-        return igrid
-
-    # @tf.function(reduce_retracing=True)
     def __resample_interpolation__(self, inputs, igrid):
-        batch_len = tf.split(tf.shape(inputs), [1, -1])[0]
-
-        max_mask = tf.ones(igrid.shape, dtype=self.dtype) * (inputs.shape[1] - 1,
-                                                             inputs.shape[2] - 1,
-                                                             inputs.shape[3] - 1)
-
-        lgrid = tf.math.floor(igrid)
-        ugrids = [tf.math.add(lgrid, [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)]) for i in range(8)]
-
-        udiffs = [1. - tf.abs(ugrids[i] - igrid) for i in range(8)]
-
-        for i in range(8):
-            ugrids[i] = tf.cast(tf.minimum(ugrids[i], max_mask), tf.int32)
-
-        flat_grids = [
-            tf.repeat(tf.reshape(ugrids[i], shape=(ugrids[i].shape[0] *
-                                                   ugrids[i].shape[1] *
-                                                   ugrids[i].shape[2], 3))[None, :],
-                      batch_len, axis=0) for i in range(8)]
-
-        ugrids_out = [tf.reshape(tf.gather_nd(inputs, flat_grids[i], batch_dims=1),
-                                 shape=(-1,
-                                        igrid.shape[0],
-                                        igrid.shape[1],
-                                        igrid.shape[2],
-                                        inputs.shape[-1])) for i in range(8)]
-
-        return self.__interpolate__(ugrids_out, udiffs)
+        ugrid_udiff = self.__gen_ugrid_udiff__(inputs, igrid)
+        return self.interpolate(ugrid_udiff[0], ugrid_udiff[1])
 
     @staticmethod
+    @tf.function(reduce_retracing=True)
     def __resample_nearest__(inputs, igrid):
 
         igrid = tf.cast(tf.math.round(igrid), tf.int32)
 
-        batch_len = tf.split(tf.shape(inputs), [1, -1])[0]
-
-        flat_grid = tf.repeat(tf.reshape(igrid, shape=(igrid.shape[0] * igrid.shape[1] * igrid.shape[2], 3))[None, :],
-                              batch_len, axis=0)
+        flat_grid = tf.reshape(igrid, shape=(tf.shape(igrid)[0], igrid.shape[1] * igrid.shape[2] * igrid.shape[3], 3))
 
         ugrid_out = tf.reshape(tf.gather_nd(inputs, flat_grid, batch_dims=1),
                                shape=(-1,
-                                      igrid.shape[0],
                                       igrid.shape[1],
                                       igrid.shape[2],
+                                      igrid.shape[3],
                                       inputs.shape[-1]))
 
         return ugrid_out
 
-    def __init__(self, dsamp_rate,
+    def __gen_internal_funcs__(self):
+
+        @tf.function(input_signature=(tf.TensorSpec(shape=[3, ], dtype=tf.int32),
+                                      tf.TensorSpec(shape=[None, 3, ], dtype=self.dtype),
+                                      tf.TensorSpec(shape=[None, 3, ], dtype=self.dtype),
+                                      tf.TensorSpec(shape=[3, ], dtype=tf.int32)))
+        def config_grid(input_shape, input_size, s_rate, end_shape):
+
+            end_shape_f = tf.cast(end_shape, dtype=self.dtype)
+
+            centre_point_input = tf.cast(input_shape - 1, dtype=self.dtype) / 2.
+            centre_point_output = (end_shape_f - 1.) / 2.
+
+            step_rate = (input_size - 1.) / (input_size / s_rate - 1.)
+
+            range_x = tf.cast(tf.linspace(-centre_point_output[0], centre_point_output[0],
+                                          end_shape[0]), dtype=self.dtype)
+            range_y = tf.cast(tf.linspace(-centre_point_output[1], centre_point_output[1],
+                                          end_shape[1]), dtype=self.dtype)
+            range_z = tf.cast(tf.linspace(-centre_point_output[2], centre_point_output[2],
+                                          end_shape[2]), dtype=self.dtype)
+
+            igrid = tf.repeat(tf.stack(tf.meshgrid(range_x, range_y, range_z, indexing='ij'), axis=-1)[None, :],
+                              tf.shape(s_rate)[0],
+                              axis=0)
+
+            igrid = tf.transpose(igrid, (1, 2, 3, 0, 4)) * step_rate
+
+            igrid = tf.clip_by_value(igrid,
+                                     -(input_size - 1.) / 2.,
+                                     (input_size - 1.) / 2.) + centre_point_input
+
+            igrid = tf.transpose(igrid, (3, 0, 1, 2, 4))
+
+            return igrid
+
+        @tf.function(reduce_retracing=True)
+        def gen_ugrid_udiff(inputs, igrid):
+
+            max_mask = tf.ones(tf.shape(igrid), dtype=self.dtype) * tf.cast(tf.shape(inputs)[1:-1] - 1, self.dtype)
+
+            lgrid = tf.math.floor(igrid)
+
+            udiffs = tf.TensorArray(dtype=self.dtype, size=8, dynamic_size=False)
+            ugrids_out = tf.TensorArray(dtype=self.dtype, size=8, dynamic_size=False)
+
+            for i in range(8):
+                ugrid = tf.math.add(lgrid, [tf.cast(i & 4 > 0, tf.int32),
+                                            tf.cast(i & 2 > 0, tf.int32),
+                                            tf.cast(i & 1 > 0, tf.int32)])
+
+                udiff = 1. - tf.abs(ugrid - igrid)
+
+                ugrid = tf.cast(tf.minimum(ugrid, max_mask), tf.int32)
+
+                flat_grid = tf.reshape(ugrid, shape=(-1,
+                                                     ugrid.shape[1] * ugrid.shape[2] * ugrid.shape[3],
+                                                     3))
+
+                ugrid_out = tf.reshape(tf.gather_nd(inputs, flat_grid, batch_dims=1),
+                                       shape=(-1,
+                                              igrid.shape[1],
+                                              igrid.shape[2],
+                                              igrid.shape[3],
+                                              inputs.shape[-1]))
+
+                udiffs = udiffs.write(i, udiff)
+                ugrids_out = ugrids_out.write(i, ugrid_out)
+
+            return ugrids_out.stack(), udiffs.stack()
+
+        @tf.function(input_signature=(tf.TensorSpec(shape=[8, None,
+                                                           self.end_shape[0],
+                                                           self.end_shape[1],
+                                                           self.end_shape[2], None],
+                                                    dtype=self.dtype),
+                                      tf.TensorSpec(shape=[8, None,
+                                                           self.end_shape[0],
+                                                           self.end_shape[1],
+                                                           self.end_shape[2], 3],
+                                                    dtype=self.dtype)))
+        def interpolate_tf(vals, weights):
+            c00 = tf.math.add(tf.multiply(vals[0], weights[0][..., 2, None]),
+                              tf.multiply(vals[1], weights[1][..., 2, None]))
+            c01 = tf.math.add(tf.multiply(vals[2], weights[2][..., 2, None]),
+                              tf.multiply(vals[3], weights[3][..., 2, None]))
+            c10 = tf.math.add(tf.multiply(vals[4], weights[4][..., 2, None]),
+                              tf.multiply(vals[5], weights[5][..., 2, None]))
+            c11 = tf.math.add(tf.multiply(vals[6], weights[6][..., 2, None]),
+                              tf.multiply(vals[7], weights[7][..., 2, None]))
+
+            c0 = tf.add(tf.multiply(c00, weights[0][..., 1, None]),
+                        tf.multiply(c01, weights[2][..., 1, None]))
+            c1 = tf.add(tf.multiply(c10, weights[4][..., 1, None]),
+                        tf.multiply(c11, weights[6][..., 1, None]))
+
+            result = tf.add(tf.multiply(c0, weights[0][..., 0, None]),
+                            tf.multiply(c1, weights[4][..., 0, None]))
+
+            return result
+
+        self.interpolate = interpolate_tf
+
+        self.__config_grid__ = config_grid
+        self.__gen_ugrid_udiff__ = gen_ugrid_udiff
+
+    def __init__(self, end_shape,
                  method: Literal["nearest", "trilinear"] = "trilinear",
+                 indep_batch=False,
                  *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self._dsamp_rate = tf.cast(
-            (dsamp_rate[0], dsamp_rate[0], dsamp_rate[0]) if len(dsamp_rate) != 3 else dsamp_rate,
-            dtype=self.dtype)
         self.igrid = None
 
         self.__sampling_function__ = self.__resample_nearest__ if method == 'nearest' \
             else self.__resample_interpolation__
 
         self.method = method
-        self.reshape = None
+        self.end_shape = end_shape
+        self.indep_batch = indep_batch
 
-    @property
-    def dsamp_rate(self):
-        return self._dsamp_rate
-
-    @dsamp_rate.setter
-    def dsamp_rate(self, dsamp_rate):
-        self._dsamp_rate = tf.cast(
-            (dsamp_rate[0], dsamp_rate[0], dsamp_rate[0]) if dsamp_rate.shape[0] != 3 else dsamp_rate,
-            dtype=self.dtype)
+        self.__gen_internal_funcs__()
 
     def call(self, inputs, *args, **kwargs):
 
-        return self.__sampling_function__(inputs, self.__config_grid__(inputs.shape))
+        grid = self.__config_grid__(tf.shape(inputs[0])[1:-1], inputs[1], inputs[2],
+                                    tf.convert_to_tensor(self.end_shape, dtype=tf.int32))
+
+        return self.__sampling_function__(inputs[0], grid)
 
 
 class BlurLayer(Layer):
@@ -632,7 +659,7 @@ class BlurLayer(Layer):
                  *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.__max_kernel_size = max_kernel_size
+        self.__max_kernel_size__ = max_kernel_size
         self.channels = None
         self.blur_limit = blur_limit
 
@@ -640,67 +667,71 @@ class BlurLayer(Layer):
 
         self.channels = input_shape[0][-1]  # Initialize it here based on input channels
 
+        max_kernel_size = self.__max_kernel_size__
+
+        @tf.function
+        def compute_blur_kernel(downsample_rate):
+            """
+            Computes a gaussian blurring kernel for the convolution operation.
+            The kernel will be of shape [K, K, K, C, C],
+            where K is the shape of the kernel determined by max_kernel_size property.
+
+            This kernel is compatible with the convolution operation for tensorflow for inputs of shape [B, H, W, D, C].
+
+            :param downsample_rate: The downsampling rate determined for blurring.
+            :return: The estimated blurring kernel
+            """
+
+            # Check Billot et al. for more details
+            std_value = tf.convert_to_tensor(2 * np.log(10) / (2 * np.pi), dtype=self.dtype) * downsample_rate
+            kernel_size = tf.cast((tf.math.ceil(2.5 * downsample_rate) / 2), dtype=tf.uint32) * 2 + 1
+
+            # Create a kernel grid for generating the blurring kernel.
+            # Grid should be of shape [K_i, K_i, K_i],
+            # with values ranging from [-K_i//2 : K_i//2]
+            kernel_length = tf.range(-tf.floor(tf.divide(kernel_size, 2)), (tf.floor(tf.divide(kernel_size, 2)) + 1))
+
+            kernel_grid = tf.cast(tf.stack(tf.meshgrid(kernel_length, kernel_length, kernel_length,
+                                                       indexing='ij'), axis=-1), self.dtype)
+
+            # 3D Gaussian distribution
+            gaussian_kernel = 1 / tf.pow(tf.math.sqrt(2. * np.pi) * std_value, 3.) * \
+                              tf.math.exp(-(kernel_grid[..., 0] ** 2 +
+                                            kernel_grid[..., 1] ** 2 +
+                                            kernel_grid[..., 2] ** 2) / (2 * std_value ** 2))
+
+            # To ensure that the convolution does not add an intensity bias
+            gaussian_kernel /= tf.reduce_sum(gaussian_kernel)
+
+            # Our kernel is of shape K_i^3, but we need it to be the size of max_kernel_size. Therefore, we pad with zeros.
+            kernel_pads = tf.math.abs(tf.subtract(tf.convert_to_tensor(max_kernel_size, dtype=tf.int32),
+                                                  tf.cast(kernel_size, tf.int32)))
+
+            paddings = tf.convert_to_tensor([[kernel_pads // 2, kernel_pads // 2],
+                                             [kernel_pads // 2, kernel_pads // 2],
+                                             [kernel_pads // 2, kernel_pads // 2]])
+
+            # Expand the dims to [K, K, K, 1, 1]
+            blur_kernel = tf.pad(gaussian_kernel, paddings=paddings)[..., None, None]
+
+            # Keras convolution kernels are of shape [X, Y, Z, C_i, C_o], where inputs of channel sizes C_i gets convolved
+            # and mapped to channel sizes C_o. For this purpose C_i == C_o == C.
+            #
+            # Due to the blurring operation we need to apply the kernel to each channel separately.
+            # This means that for all channels c in range(0, C) kernel[:, :, :, c_1, c_2] == blur_kernel,
+            # and kernel[:, :, :, c, c] = 0 otherwise.
+            #
+            # The kernel shape has to be [K, K, K, C, C].
+            # Therefore, we expand and repeat the identity matrix [C, C] by K for all directions to obtain [K, K, K, C, C]
+            # We then broadcast the blur kernel [K, K, K, 1, 1] and multiply element-wise to obtain the final kernel.
+            full_kernel = tf.tile(tf.eye(self.channels, self.channels)[None, None, None, :, :],
+                                  [max_kernel_size, max_kernel_size, max_kernel_size, 1, 1])
+
+            return full_kernel * blur_kernel
+
+        self.__compute_blur_kernel__ = compute_blur_kernel
+
         return super().build(input_shape)
-
-    @tf.function
-    def __compute_blur_kernel__(self, downsample_rate):
-        """
-        Computes a gaussian blurring kernel for the convolution operation.
-        The kernel will be of shape [K, K, K, C, C],
-        where K is the shape of the kernel determined by max_kernel_size property.
-
-        This kernel is compatible with the convolution operation for tensorflow for inputs of shape [B, H, W, D, C].
-
-        :param downsample_rate: The downsampling rate determined for blurring.
-        :return: The estimated blurring kernel
-        """
-
-        # Check Billot et al. for more details
-        std_value = tf.convert_to_tensor(2 * np.log(10) / (2 * np.pi), dtype=self.dtype) * downsample_rate
-        kernel_size = tf.cast((tf.math.ceil(2.5 * downsample_rate) / 2), dtype=tf.uint32) * 2 + 1
-
-        # Create a kernel grid for generating the blurring kernel.
-        # Grid should be of shape [K_i, K_i, K_i],
-        # with values ranging from [-K_i//2 : K_i//2]
-        kernel_length = tf.range(-tf.floor(tf.divide(kernel_size, 2)), (tf.floor(tf.divide(kernel_size, 2)) + 1))
-
-        kernel_grid = tf.cast(tf.stack(tf.meshgrid(kernel_length, kernel_length, kernel_length,
-                                                   indexing='ij'), axis=-1), self.dtype)
-
-        # 3D Gaussian distribution
-        gaussian_kernel = 1 / tf.pow(tf.math.sqrt(2. * np.pi) * std_value, 3.) * \
-            tf.math.exp(-(kernel_grid[..., 0] ** 2 +
-                          kernel_grid[..., 1] ** 2 +
-                          kernel_grid[..., 2] ** 2) / (2 * std_value ** 2))
-
-        # To ensure that the convolution does not add an intensity bias
-        gaussian_kernel /= tf.reduce_sum(gaussian_kernel)
-
-        # Our kernel is of shape K_i^3, but we need it to be the size of max_kernel_size. Therefore, we pad with zeros.
-        kernel_pads = tf.math.abs(tf.subtract(tf.convert_to_tensor(self.__max_kernel_size, dtype=tf.int32),
-                                              tf.cast(kernel_size, tf.int32)))
-
-        paddings = tf.convert_to_tensor([[kernel_pads // 2, kernel_pads // 2],
-                                         [kernel_pads // 2, kernel_pads // 2],
-                                         [kernel_pads // 2, kernel_pads // 2]])
-
-        # Expand the dims to [K, K, K, 1, 1]
-        blur_kernel = tf.pad(gaussian_kernel, paddings=paddings)[..., None, None]
-
-        # Keras convolution kernels are of shape [X, Y, Z, C_i, C_o], where inputs of channel sizes C_i gets convolved
-        # and mapped to channel sizes C_o. For this purpose C_i == C_o == C.
-        #
-        # Due to the blurring operation we need to apply the kernel to each channel separately.
-        # This means that for all channels c in range(0, C) kernel[:, :, :, c_1, c_2] == blur_kernel,
-        # and kernel[:, :, :, c, c] = 0 otherwise.
-        #
-        # The kernel shape has to be [K, K, K, C, C].
-        # Therefore, we expand and repeat the identity matrix [C, C] by K for all directions to obtain [K, K, K, C, C]
-        # We then broadcast the blur kernel [K, K, K, 1, 1] and multiply element-wise to obtain the final kernel.
-        full_kernel = tf.tile(tf.eye(self.channels, self.channels)[None, None, None, :, :],
-                              [self.__max_kernel_size, self.__max_kernel_size, self.__max_kernel_size, 1, 1])
-
-        return full_kernel * blur_kernel
 
     @tf.function
     def blur(self, input_tensor, blur_rate):
@@ -710,9 +741,9 @@ class BlurLayer(Layer):
         ret = tf.cond(tf.less_equal(blur_rate, self.blur_limit),  # Do not blur at certain rates
                       lambda: input_tensor[
                               :,
-                              self.__max_kernel_size // 2:input_tensor_shape[1] - self.__max_kernel_size // 2,
-                              self.__max_kernel_size // 2:input_tensor_shape[2] - self.__max_kernel_size // 2,
-                              self.__max_kernel_size // 2:input_tensor_shape[3] - self.__max_kernel_size // 2,
+                              self.__max_kernel_size__ // 2:input_tensor_shape[1] - self.__max_kernel_size__ // 2,
+                              self.__max_kernel_size__ // 2:input_tensor_shape[2] - self.__max_kernel_size__ // 2,
+                              self.__max_kernel_size__ // 2:input_tensor_shape[3] - self.__max_kernel_size__ // 2,
                               :],
                       lambda: tf.nn.convolution(input_tensor, self.__compute_blur_kernel__(blur_rate)))
 
@@ -726,9 +757,10 @@ class BlurLayer(Layer):
 class SamplerLayer(Layer):
     def __init__(self, max_hr_downsamp, max_lr_downsamp, t1_init_downsamp=1.,
                  min_hr_downsamp=1.,
+                 target_shape=(16, 16, 16),
                  apply_blurring=True,
                  augment=True,
-                 individual_resampling=True,
+                 individual_resampling=False,
                  *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -752,18 +784,20 @@ class SamplerLayer(Layer):
         self._hr_output_dims = None
         self._t1_output_dims = None
 
+        self.target_shape = tf.convert_to_tensor(target_shape, dtype=self.dtype)
+
         self.hr_blurrer = BlurLayer(self.__blur_kernel_max_size)
         self.lr_blurrer = BlurLayer(self.__blur_kernel_max_size)
         self.t1_blurrer = BlurLayer(self.__t1_blur_kernel_max_size)
 
-        self.t1_downsampler = SamplingLayer(dsamp_rate=[self.t1_init_downsamp])
-        self.mask_downsampler = SamplingLayer(dsamp_rate=[self.t1_init_downsamp], method="nearest")
-        self.hr_downsampler = SamplingLayer(dsamp_rate=[1])
-        self.lr_downsampler = SamplingLayer(dsamp_rate=[1])
-        self.lr_upsampler = SamplingLayer(dsamp_rate=[1])
+        self.t1_downsampler = SamplingLayer(end_shape=target_shape)
+        self.mask_downsampler = SamplingLayer(end_shape=target_shape, method="nearest")
+        self.hr_downsampler = SamplingLayer(end_shape=target_shape)
+        self.lr_downsampler = SamplingLayer(end_shape=target_shape)
+        self.lr_upsampler = SamplingLayer(end_shape=target_shape)
 
         self.lr_augmenter = AugmentationLayer(gamma_std=0., brightness_std=0., contrast_std=0., max_noise_std=0.05)
-        self.t1_augmenter = AugmentationLayer(max_noise_std=0.1)
+        self.t1_augmenter = AugmentationLayer(max_noise_std=0.075)
 
     def get_config(self):
         config = super().get_config()
@@ -846,23 +880,6 @@ class SamplerLayer(Layer):
 
         return super().build(input_shape)
 
-    @tf.function
-    def __crop__(self, tensor, rate):
-        target_img_shape = tf.cast(self._hr_output_dims[1:-1], rate.dtype) * rate
-        crop_values = tf.cast((tensor.shape[1:-1] - tf.cast(tf.round(target_img_shape), dtype=tf.int32)),
-                              dtype=self.dtype) / 2.0
-
-        crop_values_f = tf.cast(tf.math.floor(crop_values), dtype=tf.int32)
-        crop_values_c = tf.cast(tf.math.ceil(crop_values), dtype=tf.int32)
-
-        tensor_dims = tf.shape(tensor)
-
-        return tensor[:,
-                      crop_values_f[0]:tensor_dims[1] - crop_values_c[0],
-                      crop_values_f[1]:tensor_dims[2] - crop_values_c[1],
-                      crop_values_f[2]:tensor_dims[3] - crop_values_c[2],
-                      :]
-
     def call(self, inputs, *args, **kwargs):
 
         assert len(inputs) >= 4
@@ -885,46 +902,30 @@ class SamplerLayer(Layer):
                 assert inputs_hr.shape[0] == hr_downsamp_rate.shape[0]
                 assert inputs_lr.shape[0] == lr_downsamp_rate.shape[0]
 
-                inputs_hr = tf.concat([self.hr_blurrer([inputs_hr[None, bn], hr_downsamp_rate[bn]])
+                inputs_hr = tf.concat([self.hr_blurrer([inputs_hr[None, bn], hr_downsamp_rate[bn, 0]])
                                        for bn in range(inputs_hr.shape[0])],
                                       axis=0)
-                inputs_lr = tf.concat([self.lr_blurrer([inputs_lr[None, bn], lr_downsamp_rate[bn]])
+                inputs_lr = tf.concat([self.lr_blurrer([inputs_lr[None, bn], lr_downsamp_rate[bn, 0]])
                                        for bn in range(inputs_lr.shape[0])],
                                       axis=0)
 
             else:
-                inputs_hr = self.hr_blurrer([inputs_hr, hr_downsamp_rate[0]])
-                inputs_lr = self.lr_blurrer([inputs_lr, lr_downsamp_rate[0]])
+                inputs_hr = self.hr_blurrer([inputs_hr, hr_downsamp_rate[0, 0]])
+                inputs_lr = self.lr_blurrer([inputs_lr, lr_downsamp_rate[0, 0]])
 
-        if individual_resampling:
+        lr_shape = tf.repeat(self.target_shape[None],
+                             tf.shape(lr_downsamp_rate)[0], axis=0) * hr_downsamp_rate / lr_downsamp_rate
 
-            assert inputs_hr.shape[0] == len(hr_downsamp_rate)
-            assert inputs_lr.shape[0] == len(lr_downsamp_rate)
-
-            hr_temp = []
-            for bn in range(inputs_hr.shape[0]):
-                input_hr = self.__crop__(inputs_hr[None, bn], hr_downsamp_rate[bn])
-                self.hr_downsampler.dsamp_rate = tf.convert_to_tensor([hr_downsamp_rate[bn]])
-                hr_temp.append(self.hr_downsampler(input_hr))
-            inputs_hr = tf.concat(hr_temp, axis=0)
-
-            lr_temp = []
-            for bn in range(inputs_lr.shape[0]):
-                input_lr = self.__crop__(inputs_lr[None, bn], hr_downsamp_rate[bn])
-                self.lr_downsampler.dsamp_rate = tf.convert_to_tensor([lr_downsamp_rate[bn]])
-                lr_temp.append(self.lr_downsampler(input_lr))
-            inputs_lr = lr_temp
-
-        else:
-
-            inputs_hr = self.__crop__(inputs_hr, hr_downsamp_rate)
-            inputs_lr = self.__crop__(inputs_lr, hr_downsamp_rate)
-
-            self.hr_downsampler.dsamp_rate = hr_downsamp_rate
-            self.lr_downsampler.dsamp_rate = lr_downsamp_rate
-
-            inputs_hr = self.hr_downsampler(inputs_hr)
-            inputs_lr = self.lr_downsampler(inputs_lr)
+        inputs_hr = self.hr_downsampler([inputs_hr,
+                                         tf.repeat(tf.cast(tf.shape(inputs_hr)[1:-1], dtype=self.dtype)[None],
+                                                   tf.shape(hr_downsamp_rate)[0], axis=0),
+                                         hr_downsamp_rate,
+                                         ])
+        inputs_lr = self.lr_downsampler([inputs_lr,
+                                         tf.repeat(tf.cast(tf.shape(inputs_lr)[1:-1], dtype=self.dtype)[None],
+                                                   tf.shape(lr_downsamp_rate)[0], axis=0),
+                                         lr_downsamp_rate,
+                                         ])
 
         if inputs_t1 is not None:
 
@@ -932,63 +933,33 @@ class SamplerLayer(Layer):
 
             if self.apply_blurring:
                 if individual_resampling:
-                    inputs_t1 = tf.concat([self.t1_blurrer([inputs_t1[None, bn], t1_downsamp_rate[bn]])
+                    inputs_t1 = tf.concat([self.t1_blurrer([inputs_t1[None, bn], t1_downsamp_rate[bn, 0]])
                                            for bn in range(t1_downsamp_rate.shape[0])], axis=0)
                 else:
-                    inputs_t1 = self.t1_blurrer([inputs_t1, t1_downsamp_rate[0]])
+                    inputs_t1 = self.t1_blurrer([inputs_t1, t1_downsamp_rate[0, 0]])
 
-            if individual_resampling:
-
-                t1_temp = []
-                for bn in range(inputs_t1.shape[0]):
-                    input_t1 = self.__crop__(inputs_t1[None, bn], t1_downsamp_rate[bn])
-                    self.t1_downsampler.dsamp_rate = tf.convert_to_tensor([t1_downsamp_rate[bn]])
-                    t1_temp.append(self.t1_downsampler(input_t1))
-                inputs_t1 = tf.concat(t1_temp, axis=0)
-
-            else:
-                inputs_t1 = self.__crop__(inputs_t1, t1_downsamp_rate[0])
-                self.t1_downsampler.dsamp_rate = tf.divide(inputs_t1.shape[1:-1], inputs_hr.shape[1:-1])
-
-                inputs_t1 = self.t1_downsampler(inputs_t1)
+            inputs_t1 = self.t1_downsampler([inputs_t1,
+                                             tf.repeat(tf.cast(tf.shape(inputs_t1)[1:-1][None], dtype=self.dtype),
+                                                       tf.shape(t1_downsamp_rate)[0], axis=0),
+                                             t1_downsamp_rate,
+                                             ])
 
             if self.augment:
                 inputs_t1 = self.t1_augmenter(inputs_t1)
 
         if inputs_mask is not None:
 
-            if individual_resampling:
-                mask_temp = []
-                for bn in range(inputs_mask.shape[0]):
-                    input_mask = self.__crop__(inputs_mask[None, bn], hr_downsamp_rate[bn])
-                    self.mask_downsampler.dsamp_rate = tf.convert_to_tensor([hr_downsamp_rate[bn]])
-                    mask_temp.append(self.mask_downsampler(input_mask))
-                inputs_mask = tf.concat(mask_temp, axis=0)
-
-            else:
-                inputs_mask = self.__crop__(inputs_mask, hr_downsamp_rate)
-                self.mask_downsampler.dsamp_rate = hr_downsamp_rate
-
-                inputs_mask = self.mask_downsampler(inputs_mask)
+            inputs_mask = self.mask_downsampler([inputs_mask,
+                                                 tf.repeat(tf.cast(tf.shape(inputs_mask)[1:-1][None], dtype=self.dtype),
+                                                           tf.shape(hr_downsamp_rate)[0], axis=0),
+                                                 hr_downsamp_rate,
+                                                 ])
 
         if self.augment:
-            if individual_resampling:
-                inputs_lr = [self.lr_augmenter(input_lr) for input_lr in inputs_lr]
-            else:
-                inputs_lr = self.lr_augmenter(inputs_lr)  # Do at lower space to simulate noise
+            inputs_lr = self.lr_augmenter(inputs_lr)  # Do at lower space to simulate noise
 
-        if individual_resampling:
-
-            lr_temp = []
-            for input_lr in inputs_lr:
-                self.lr_upsampler.dsamp_rate = tf.divide(input_lr.shape[1:-1], inputs_hr.shape[1:-1])
-                lr_temp.append(self.lr_upsampler(input_lr))
-
-            inputs_lr = tf.concat(lr_temp, axis=0)
-
-        else:
-            self.lr_upsampler.dsamp_rate = tf.divide(inputs_lr.shape[1:-1], inputs_hr.shape[1:-1])
-            inputs_lr = self.lr_upsampler(inputs_lr)
+        lr_upsamp_rate = tf.cast(lr_shape, dtype=self.dtype) / self.target_shape
+        inputs_lr = self.lr_upsampler([inputs_lr, lr_shape, lr_upsamp_rate])
 
         outputs = [inputs_lr, inputs_hr]
 
@@ -1005,13 +976,33 @@ class RandomSamplerLayer(SamplerLayer):
 
     def __init__(self, max_hr_downsamp, max_lr_downsamp, t1_init_downsamp=1.,
                  min_hr_downsamp=1.,
+                 min_lr_downsamp=1.25,
                  static_hr=False,
                  static_lr=False,
                  apply_blurring=True,
                  augment=True, *args, **kwargs):
+        """
+        Sampling strategy where the high resolution image
+        and low resolution image downsampling rates are selected randomly.
+        The low resolution rate is constrained within the high-res rate.
 
-        super().__init__(max_hr_downsamp, max_lr_downsamp, t1_init_downsamp, min_hr_downsamp, apply_blurring, augment,
+        :param max_hr_downsamp:
+        :param max_lr_downsamp:
+        :param t1_init_downsamp:
+        :param min_hr_downsamp:
+        :param static_hr:
+        :param static_lr:
+        :param apply_blurring:
+        :param augment:
+        :param args:
+        :param kwargs:
+        """
+
+        super().__init__(max_hr_downsamp, max_lr_downsamp, t1_init_downsamp, min_hr_downsamp,
+                         apply_blurring=apply_blurring, augment=augment,
                          *args, **kwargs)
+
+        self.min_lr_downsamp = min_lr_downsamp
 
         self.static_hr = static_hr
         self.static_lr = static_lr
@@ -1034,23 +1025,35 @@ class RandomSamplerLayer(SamplerLayer):
         static_hr = self.static_hr or not bool(inputs_hr.shape[0])  # If batch is none just return target shape.
         static_lr = self.static_lr or not bool(inputs_lr.shape[0])  # If batch is none just return target shape.
 
+        batch_shape = tf.shape(inputs_hr)[0]
+
         if static_hr:
-            hr_downsamp_rate = tf.convert_to_tensor([self.max_hr_downsamp], dtype=self.dtype)
+            hr_downsamp_rate = tf.repeat(tf.convert_to_tensor([[self.max_hr_downsamp] * 3], dtype=self.dtype),
+                                         batch_shape, axis=0)
         elif self.individual_resampling:
-            hr_downsamp_rate = tf.random.uniform([inputs_hr.shape[0]],
-                                                 self.min_hr_downsamp, self.max_hr_downsamp,
-                                                 dtype=self.dtype)
+            hr_downsamp_rate = tf.repeat(tf.random.uniform([batch_shape, 1],
+                                                           self.min_hr_downsamp, self.max_hr_downsamp,
+                                                           dtype=self.dtype), repeats=3, axis=-1)
         else:
-            hr_downsamp_rate = tf.random.uniform([1], self.min_hr_downsamp, self.max_hr_downsamp, dtype=self.dtype)
+            hr_downsamp_rate = (tf.ones((batch_shape, 3)) *
+                                tf.random.uniform([1, 1],
+                                                  self.min_hr_downsamp, self.max_hr_downsamp,
+                                                  dtype=self.dtype))
 
         if static_lr:
-            lr_downsamp_rate = tf.convert_to_tensor([self.max_lr_downsamp], dtype=self.dtype)
+            lr_downsamp_rate = tf.repeat(tf.convert_to_tensor([[self.max_lr_downsamp] * 3], dtype=self.dtype),
+                                         batch_shape, axis=0)
         elif self.individual_resampling:
-            lr_downsamp_rate = tf.random.uniform([inputs_lr.shape[0]],
-                                                 hr_downsamp_rate, self.max_lr_downsamp,
-                                                 dtype=self.dtype)
+            lr_downsamp_rate = tf.repeat(tf.random.uniform([batch_shape],
+                                                           tf.maximum(hr_downsamp_rate[:, 0], self.min_lr_downsamp),
+                                                           self.max_lr_downsamp,
+                                                           dtype=self.dtype)[:, None], repeats=3, axis=-1)
         else:
-            lr_downsamp_rate = tf.random.uniform([1], hr_downsamp_rate, self.max_lr_downsamp, dtype=self.dtype)
+            lr_downsamp_rate = (tf.ones((batch_shape, 3)) *
+                                tf.random.uniform([1],
+                                                  tf.maximum(hr_downsamp_rate[0], self.max_lr_downsamp),
+                                                  self.max_lr_downsamp,
+                                                  dtype=self.dtype))
 
         return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
                              lr_downsamp_rate, hr_downsamp_rate], *args, **kwargs)
@@ -1065,10 +1068,26 @@ class SameRateSamplerLayer(SamplerLayer):
                  static=False,
                  apply_blurring=True,
                  augment=True, *args, **kwargs):
+        """
+        Sampling strategy where the upsampling rate between low and high image outputs are constant.
+
+        :param max_hr_downsamp:
+        :param downsamp_rate:
+        :param t1_init_downsamp:
+        :param min_hr_downsamp:
+        :param static:
+        :param apply_blurring:
+        :param augment:
+        :param args:
+        :param kwargs:
+        """
 
         max_lr_downsamp = max_hr_downsamp * downsamp_rate
 
-        super().__init__(max_hr_downsamp, max_lr_downsamp, t1_init_downsamp, min_hr_downsamp, apply_blurring, augment,
+        super().__init__(max_hr_downsamp, max_lr_downsamp, t1_init_downsamp,
+                         min_hr_downsamp=min_hr_downsamp,
+                         apply_blurring=apply_blurring,
+                         augment=augment,
                          *args, **kwargs)
 
         self.downsamp_rate = downsamp_rate
@@ -1091,14 +1110,18 @@ class SameRateSamplerLayer(SamplerLayer):
 
         static = self.static or not bool(inputs_hr.shape[0])  # If batch is none just return target shape.
 
+        batch_shape = tf.shape(inputs_hr)[0]
+
         if static:
-            hr_downsamp_rate = tf.convert_to_tensor([self.max_hr_downsamp], dtype=self.dtype)
+            hr_downsamp_rate = tf.ones((batch_shape, 3)) * self.max_hr_downsamp
         elif self.individual_resampling:
-            hr_downsamp_rate = tf.random.uniform([inputs_hr.shape[0]],
+            hr_downsamp_rate = tf.random.uniform([batch_shape, 1],
                                                  self.min_hr_downsamp, self.max_hr_downsamp,
-                                                 dtype=self.dtype)
+                                                 dtype=self.dtype) * tf.convert_to_tensor([1., 1., 1.])
         else:
-            hr_downsamp_rate = tf.random.uniform([1], self.min_hr_downsamp, self.max_hr_downsamp, dtype=self.dtype)
+            hr_downsamp_rate = tf.ones((batch_shape, 3)) * tf.random.uniform([1, 1],
+                                                                             self.min_hr_downsamp, self.max_hr_downsamp,
+                                                                             dtype=self.dtype)
 
         lr_downsamp_rate = hr_downsamp_rate * self.downsamp_rate
 
@@ -1114,13 +1137,29 @@ class ListSamplerLayer(SamplerLayer):
                  t1_init_downsamp=1.,
                  apply_blurring=True,
                  augment=True, *args, **kwargs):
+        """
+        Sampling strategy where the low and high-res rates are selected from a list of deterministic values.
+
+        :param hr_downsamp_rates:
+        :param lr_downsamp_rates:
+        :param t1_init_downsamp:
+        :param apply_blurring:
+        :param augment:
+        :param args:
+        :param kwargs:
+        """
+
 
         super().__init__(max(hr_downsamp_rates), max(lr_downsamp_rates),
-                         t1_init_downsamp, min(hr_downsamp_rates), apply_blurring, augment,
+                         t1_init_downsamp, min(hr_downsamp_rates),
+                         apply_blurring=apply_blurring, augment=augment,
                          *args, **kwargs)
 
         self.hr_downsamp_rates = hr_downsamp_rates
         self.lr_downsamp_rates = lr_downsamp_rates
+
+        self.log_probs_hr = tf.math.log([[1 / len(self.hr_downsamp_rates)] * len(self.hr_downsamp_rates)])
+        self.log_probs_lr = tf.math.log([[1 / len(self.lr_downsamp_rates)] * len(self.lr_downsamp_rates)])
 
     def get_config(self):
         config = super().get_config()
@@ -1137,23 +1176,29 @@ class ListSamplerLayer(SamplerLayer):
         inputs_t1 = None if len(inputs) < 2 else inputs[1]
         inputs_mask = None if len(inputs) < 3 else inputs[2]
 
+        batch_shape = tf.shape(inputs_hr)[0]
+
         if not bool(inputs_hr.shape[0]):  # If batch is none just return target shape.
-            hr_downsamp_rate = tf.convert_to_tensor([self.max_hr_downsamp])
+            hr_downsamp_rate = tf.ones((batch_shape, 3)) * self.max_hr_downsamp
         elif self.individual_resampling:
-            hr_downsamp_rate = tf.convert_to_tensor(random.choices(self.hr_downsamp_rates, k=inputs_hr.shape[0]),
-                                                    dtype=self.dtype)
+            indices = tf.transpose(tf.random.categorical(self.log_probs_hr, batch_shape)) * [1, 1, 1]
+            hr_downsamp_rate = tf.gather(self.hr_downsamp_rates, indices)
+
         else:
-            hr_downsamp_rate = tf.convert_to_tensor([random.choice(self.hr_downsamp_rates)],
-                                                    dtype=self.dtype)
+            indices = tf.transpose(tf.random.categorical(self.log_probs_hr, 1)) * tf.ones([batch_shape, 3],
+                                                                                          dtype=tf.int64)
+            hr_downsamp_rate = tf.gather(self.hr_downsamp_rates, indices)
 
         if not bool(inputs_lr.shape[0]):  # If batch is none just return target shape.
-            lr_downsamp_rate = tf.convert_to_tensor([self.max_lr_downsamp])
+            lr_downsamp_rate = tf.ones((batch_shape, 3)) * self.max_lr_downsamp
         elif self.individual_resampling:
-            lr_downsamp_rate = tf.convert_to_tensor(random.choices(self.lr_downsamp_rates, k=inputs_lr.shape[0]),
-                                                    dtype=self.dtype)
+            indices = tf.transpose(tf.random.categorical(self.log_probs_lr, batch_shape)) * [1, 1, 1]
+            lr_downsamp_rate = tf.gather(self.lr_downsamp_rates, indices)
+
         else:
-            lr_downsamp_rate = tf.convert_to_tensor([random.choice(self.lr_downsamp_rates)],
-                                                    dtype=self.dtype)
+            indices = tf.transpose(tf.random.categorical(self.log_probs_lr, 1)) * tf.ones([batch_shape, 3],
+                                                                                          dtype=tf.int64)
+            lr_downsamp_rate = tf.gather(self.lr_downsamp_rates, indices)
 
         return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
                              lr_downsamp_rate, hr_downsamp_rate], *args, **kwargs)
