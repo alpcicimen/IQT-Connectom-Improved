@@ -149,50 +149,50 @@ class SamplingLayerCase(tft.TestCase):
         self.assertTrue(tf.reduce_sum(tf.abs(target_interp - post_interp)) <= 1e-5)
 
 
-class DTIFitLayerCase(tft.TestCase):
-
-    def setUp(self):
-
-        from skimage.io import imread
-
-        img = np.mean(np.array(imread("../data/testing/phantom.png"))[..., :3], axis=-1, dtype=int)
-
-        # Value 2 is a mix of 1 and 5
-        # Value 4 is a mix of 1 and 7
-        # Value 6 is a mix of 5 and 7
-        for i, v in enumerate(np.unique(img)):
-            img[img == v] = i
-
-        # img = np.repeat(img, repeats=6, axis=-1).astype(float)
-
-        img_dti = np.zeros(img.shape + (3, 3))
-
-        for i in np.unique(img)[1:]:
-
-            if i in [2, 4, 6]:
-                continue
-
-            eigenvalues = np.sort(np.concatenate((np.random.uniform(1.5e-3, 2.5e-3, 1),
-                                                  np.random.uniform(2.e-4, 8.e-4, 2))))[::-1]
-
-            # Random rotation matrix to orient the tensor
-            random_matrix = np.random.randn(3, 3)
-            Q, _ = np.linalg.qr(random_matrix)  # QR decomposition for a random orthogonal matrix
-
-            # Construct the DTI matrix: D = Q @ diag(eigenvalues) @ Q.T
-            dti_matrix = Q @ np.diag(eigenvalues) @ Q.T
-
-            img_dti[img == i, :] = dti_matrix
-
-        # Value 2 is a mix of 1 and 5
-        # Value 4 is a mix of 1 and 7
-        # Value 6 is a mix of 5 and 7
-
-        img_dti[img == 2] = np.exp((np.log(img_dti[img == 1][0]) + np.log(img_dti[img == 5][0])) / 2)
-        img_dti[img == 4] = np.exp((np.log(img_dti[img == 1][0]) + np.log(img_dti[img == 7][0])) / 2)
-        img_dti[img == 6] = np.exp((np.log(img_dti[img == 5][0]) + np.log(img_dti[img == 7][0])) / 2)
-
-        self.dti_img = img_dti
+# class DTIFitLayerCase(tft.TestCase):
+#
+#     def setUp(self):
+#
+#         from skimage.io import imread
+#
+#         img = np.mean(np.array(imread("../data/testing/phantom.png"))[..., :3], axis=-1, dtype=int)
+#
+#         # Value 2 is a mix of 1 and 5
+#         # Value 4 is a mix of 1 and 7
+#         # Value 6 is a mix of 5 and 7
+#         for i, v in enumerate(np.unique(img)):
+#             img[img == v] = i
+#
+#         # img = np.repeat(img, repeats=6, axis=-1).astype(float)
+#
+#         img_dti = np.zeros(img.shape + (3, 3))
+#
+#         for i in np.unique(img)[1:]:
+#
+#             if i in [2, 4, 6]:
+#                 continue
+#
+#             eigenvalues = np.sort(np.concatenate((np.random.uniform(1.5e-3, 2.5e-3, 1),
+#                                                   np.random.uniform(2.e-4, 8.e-4, 2))))[::-1]
+#
+#             # Random rotation matrix to orient the tensor
+#             random_matrix = np.random.randn(3, 3)
+#             Q, _ = np.linalg.qr(random_matrix)  # QR decomposition for a random orthogonal matrix
+#
+#             # Construct the DTI matrix: D = Q @ diag(eigenvalues) @ Q.T
+#             dti_matrix = Q @ np.diag(eigenvalues) @ Q.T
+#
+#             img_dti[img == i, :] = dti_matrix
+#
+#         # Value 2 is a mix of 1 and 5
+#         # Value 4 is a mix of 1 and 7
+#         # Value 6 is a mix of 5 and 7
+#
+#         img_dti[img == 2] = np.exp((np.log(img_dti[img == 1][0]) + np.log(img_dti[img == 5][0])) / 2)
+#         img_dti[img == 4] = np.exp((np.log(img_dti[img == 1][0]) + np.log(img_dti[img == 7][0])) / 2)
+#         img_dti[img == 6] = np.exp((np.log(img_dti[img == 5][0]) + np.log(img_dti[img == 7][0])) / 2)
+#
+#         self.dti_img = img_dti
 
 
 class SamplerLayerCase(tft.TestCase):
