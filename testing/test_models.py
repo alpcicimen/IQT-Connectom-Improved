@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import numpy as np
 import numpy.testing as npt
@@ -14,13 +15,15 @@ class ModelConfigCase(unittest.TestCase):
 
     def test_loaders(self):
 
-        with self.assertRaises(ValueError):
-            models.config_model("non-existent model", 16, 16)
+        with mock.patch("keras.utils.plot_model"):
 
-        for conf in ["UNet-T1", "UNet-PreFusion", "UNet"]:
-            model = models.config_model(conf, 16, 16)
+            with self.assertRaises(ValueError):
+                models.config_model("non-existent model", 16, train_preprocessors=[])
 
-            npt.assert_equal(model.output_shape[1:], (16, 16, 16, 6))
+            for conf in ["UNet-T1", "UNet-PreFusion", "UNet"]:
+                model = models.config_model(conf, 16, train_preprocessors=[])
+
+                self.assertEqual(model.output_shape[1:], (16, 16, 16, 6))
 
 
 if __name__ == '__main__':

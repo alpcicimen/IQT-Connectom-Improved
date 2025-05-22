@@ -18,7 +18,7 @@ def dt_rmse(input, target):
     return np.median(np.sqrt(np.mean(np.square(target - input), axis=-1)))
 
 
-def get_grid_indices(subj_img, i_patch_size=5, o_patch_size=3, overlap=0) -> List[Tuple[int, int, int]]:
+def get_grid_indices(subj_img, mask, i_patch_size=5, o_patch_size=3, overlap=0) -> List[Tuple[int, int, int]]:
     (xsize, ysize, zsize, _) = subj_img.shape
 
     recon_indx = [(i, j, k)
@@ -30,7 +30,10 @@ def get_grid_indices(subj_img, i_patch_size=5, o_patch_size=3, overlap=0) -> Lis
                                      2 * o_patch_size - overlap * 2)
                   for i in np.arange(i_patch_size,
                                      xsize - i_patch_size,
-                                     2 * o_patch_size - overlap * 2)]
+                                     2 * o_patch_size - overlap * 2)
+                  if np.sum(mask[i-o_patch_size:i+o_patch_size,
+                                 j-o_patch_size:j+o_patch_size,
+                                 k-o_patch_size:k+o_patch_size,] > 0)]
 
     return recon_indx
 
@@ -54,7 +57,7 @@ def main(model_type,
     model = config_model(model_type,
                          patch_size,
                          patch_size,
-                         model_weights_dir)
+                         weights_dir=model_weights_dir)
 
     df = []
 
@@ -107,7 +110,8 @@ def main(model_type,
 
         nib.save(t1_rescaled_nii, os.path.join(output_dir, f"{subj_id}_T1_resc"))
 
-        test_data_rescaled = util.apply_gaussian_filter(test_data, upsamp_rate)
+        if upsamp_rate > 1.:
+            test_data_rescaled = util.apply_gaussian_filter(test_data, upsamp_rate)
 
         test_data_rescaled = zoom(test_data_rescaled,
                                   (1/upsamp_rate, 1/upsamp_rate, 1/upsamp_rate, 1),
@@ -137,6 +141,7 @@ def main(model_type,
                                                                                            'dti',
                                                                                            clip_strategy=clip_strategy,
                                                                                            value=clip_value))
+
         util.apply_normalization_combined(t1_rescaled, mask, method='minmax', values=norm_metrics_t1)
 
         target_data[..., np.array([0, 3, 5])] = np.clip(target_data[..., np.array([0, 3, 5])],
@@ -159,7 +164,7 @@ def main(model_type,
 
         input_tensors = np.copy(test_data)[...]
 
-        run_indices = get_grid_indices(input_tensors, 8, 8, overlap=patch_overlap)
+        run_indices = get_grid_indices(input_tensors, mask, 8, 8, overlap=patch_overlap)
 
         model_output = np.zeros(test_data.shape[:-1] + (6,))
 

@@ -1,4 +1,6 @@
-from typing import Tuple, Any, Sequence
+from typing import Any, Sequence, Tuple, Literal
+
+import tensorflow as tf
 
 import numpy as np
 from numpy.typing import NDArray
@@ -7,20 +9,53 @@ import nibabel as nib
 from nibabel.nifti1 import Nifti1Header, Nifti1Image
 from nibabel.nifti2 import Nifti2Header, Nifti2Image
 import os
+import pandas as pd
 
 from tqdm import tqdm
 from scipy.ndimage import convolve
 
 
-def __load_nii__(directory: str | os.PathLike[str], filename: str) -> Nifti1Image | Nifti2Image:
+def __load_nii__(directory: str | os.PathLike[str], filename: str) -> Nifti1Image:
 
     if os.path.exists(os.path.join(directory, f"{filename}.nii")):
-        return nib.load(os.path.join(directory, f"{filename}.nii"))
+        return nib.nifti1.load(os.path.join(directory, f"{filename}.nii"))
     elif os.path.exists(os.path.join(directory, f"{filename}.nii.gz")):
-        return nib.load(os.path.join(directory, f"{filename}.nii.gz"))
+        return nib.nifti1.load(os.path.join(directory, f"{filename}.nii.gz"))
     else:
         raise FileNotFoundError("No such files in directory: \'{}\'"
                                 .format(os.path.join(directory, f"{filename}.nii")))
+
+
+def load_dwis(directory: str | os.PathLike[str],
+              file_head: str,
+              bvals_file: str,
+              bvecs_file: str,
+              bval_limit: float) -> Tuple[NDArray[Any], Nifti1Header | Nifti2Header, NDArray[Any], NDArray[Any]]:
+
+    dwi_file = __load_nii__(directory, file_head)
+
+    bvals = np.array(pd.read_csv(os.path.join(directory, bvals_file),
+                                 delimiter="  ",
+                                 engine="python",
+                                 header=None)).T
+
+    bvecs = np.array(pd.read_csv(os.path.join(directory, bvecs_file),
+                                 delimiter="  ",
+                                 engine="python",
+                                 header=None)).T
+
+    dwis = np.array(dwi_file.dataobj)
+
+    if bval_limit > 0:
+
+        valid_acqs = np.squeeze(bvals < bval_limit)
+
+        bvals = bvals[valid_acqs]
+        bvecs = bvecs[valid_acqs]
+
+        dwis = dwis[..., valid_acqs]
+
+    return dwis, dwi_file.header, bvals, bvecs
 
 
 def load_dtis(directory: str | os.PathLike[str],
@@ -29,8 +64,6 @@ def load_dtis(directory: str | os.PathLike[str],
     Loads the (currently preprocessed) DTI inputs as a Numpy array of shape [H, W, D, 8] including a sample header.
     The files are numbered from 1 to 8, where 1 corresponds to the brain mask, 2 the original image intensity S_0,
     and numbers 3-8 the diffusion tensors D_xx, D_xy, D_xz, D_yy, D_yz, D_zz respectively.
-
-    TODO Move the processing of dwis into python?
 
     :param directory: The parent directory to load the dtis from
     :param file_head: The file header. Files should be of format **header_x** where x is the file numbers 1-8.
@@ -54,10 +87,10 @@ def load_maps(directory: str | os.PathLike[str],
 
     subject_propagators = []
 
-    header = __load_nii__(directory, f"{file_head}2").header
+    header = __load_nii__(directory, f"{file_head}02").header
 
-    for i in range(1, 23):
-        subject_propagators.append(np.array(__load_nii__(directory, f"{file_head}{i}").dataobj))
+    for i in range(1, 25):
+        subject_propagators.append(np.array(__load_nii__(directory, f"{file_head}{i:02d}").dataobj))
 
     merged_maps = np.stack(subject_propagators, axis=-1)
     return merged_maps, header
@@ -87,11 +120,11 @@ def save_dtis(tensors: NDArray,
 
     for t in range(tensors.shape[-1]):
         nib.save(nib.Nifti1Image(tensors[..., t], None, reference_header),
-                 os.path.join(save_file_loc, f"{dti_file_start}{t+3}"))
+                 os.path.join(save_file_loc, f"{dti_file_start}{t+3}.nii.gz"))
 
     if mask is not None:
         nib.save(nib.Nifti1Image(mask, None, reference_header),
-                 os.path.join(save_file_loc, f"{dti_file_start}1"))
+                 os.path.join(save_file_loc, f"{dti_file_start}1.nii.gz"))
 
 
 def save_md_fa_cfa(md: NDArray[Any],
@@ -170,7 +203,7 @@ def apply_normalization(tensors, mask: NDArray[bool], method='minmax') -> NDArra
 
 
 def apply_normalization_combined(tensors, mask: NDArray[bool],
-                                 method='minmax',
+                                 method: Literal['minmax', 'stdscore'] = 'minmax',
                                  channels: NDArray | None = None,
                                  values: NDArray | None = None) -> NDArray:
     """
@@ -271,7 +304,7 @@ def revert_normalization_combined(tensors, mask, norm_metrics,
 
 def get_clip_values(tensors, mask, data_mode, clip_strategy, value: float = 3e-3) -> NDArray[float]:
 
-    match data_mode:
+    match str.lower(data_mode):
 
         case 'dti':
 
@@ -363,7 +396,7 @@ def apply_clipped_normalization(tensors,
             return None
 
 
-def apply_gaussian_filter(input: NDArray[float], downsample_rate) -> NDArray[float]:
+def apply_gaussian_filter(input_img: NDArray[float], downsample_rate) -> NDArray[float]:
 
     std_value = 2 * np.log(10) / (2 * np.pi) * downsample_rate
     kernel_size = np.int32(np.ceil(2.5 * std_value) / 2) * 2 + 1
@@ -378,11 +411,54 @@ def apply_gaussian_filter(input: NDArray[float], downsample_rate) -> NDArray[flo
 
     gaussian_kernel /= np.sum(gaussian_kernel)
 
-    if len(input.shape) == 3:
-        return convolve(input, gaussian_kernel, mode='constant')
+    if len(input_img.shape) == 3:
+        return convolve(input_img, gaussian_kernel, mode='constant')
     else:
         return np.stack([convolve(channel, gaussian_kernel, mode='constant')
-                         for channel in np.moveaxis(input, -1, 0)], axis=-1)
+                         for channel in np.moveaxis(input_img, -1, 0)], axis=-1)
+
+
+def config_grid(start, end, length: Tuple[int, int, int], dtype=np.float32):
+
+    range_x = np.linspace(start[0], end[0], length[0], dtype=dtype)
+    range_y = np.linspace(start[1], end[1], length[1], dtype=dtype)
+    range_z = np.linspace(start[2], end[2], length[2], dtype=dtype)
+
+    grid = np.stack(np.meshgrid(range_x, range_y, range_z,
+                                indexing='ij'), axis=-1)  # mgrid doesn't work very well due to ieee754 inaccuracy
+
+    return grid
+
+
+def gridded_interpolation(image: NDArray[np.float32], grid: NDArray[np.float32]) -> NDArray[np.float32]:
+
+    max_sizes = np.array(image.shape[:-1]) - 1
+
+    lgrid = np.floor(grid)
+    ugrids = [(lgrid + [int(i & 4 > 0), int(i & 2 > 0), int(i & 1 > 0)]).astype(np.int32) for i in range(8)]
+
+    udiffs = [1. - np.abs(ugrids[i] - grid) for i in range(8)]
+
+    ugrids = [np.clip(ugrids[i], a_min=0, a_max=max_sizes, dtype=np.int32) for i in range(8)]
+
+    out_img = [[] for _ in range(3)]
+
+    for i in range(8):
+        ugrid = ugrids[i].reshape((grid.shape[0] * grid.shape[1] * grid.shape[2], 3))
+
+        out = image[ugrid[:, 0],
+                    ugrid[:, 1],
+                    ugrid[:, 2]].reshape((grid.shape[0], grid.shape[1], grid.shape[2], image.shape[-1]))
+
+        out_img[0].append(out * udiffs[i][..., 2, None])
+
+    for i in range(4):
+        out_img[1].append((out_img[0][2*i] + out_img[0][2*i + 1]) * udiffs[2*i][..., 1, None])
+
+    for i in range(2):
+        out_img[2].append((out_img[1][2*i] + out_img[1][2*i + 1]) * udiffs[4*i][..., 0, None])
+
+    return out_img[2][0] + out_img[2][1]
 
 
 def md_fa_cfa(tensors, mask,

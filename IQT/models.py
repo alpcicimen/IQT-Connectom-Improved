@@ -1,60 +1,212 @@
-from typing import Tuple
+from typing import Tuple, Literal, List
+from collections.abc import Sequence
 
 import keras
 import keras.layers as KL
 import os
-from keras.activations import tanh
+from keras.activations import tanh, sigmoid
 
 from .layers import *
 
 
 def config_model(model_type,
-                 patch_size=16,
-                 t1_patch_size=16,
+                 target_patch_size=16,
+                 downsamp_rates: Sequence[float, float, float] = (1.6, 3.0, 1.25 / 0.7),
+                 diff_channel_size=6,
+                 train_preprocessors: None | List[Literal["dti",
+                                                          "map",
+                                                          "dynamic_rescale",
+                                                          "static_rate_rescale",
+                                                          "list_rescale",
+                                                          "normalize_map",
+                                                          "normalize_dti"]] = None,
+                 individual_resampling=True,
+                 augment=True,
                  weights_dir: None | str | os.PathLike[str] = None):
+
+    diff_recon_ch_size = diff_channel_size  # Placeholder
+
+    if train_preprocessors is not None and len(train_preprocessors) > 0:
+
+        kernel_penalty_diff = np.int32(np.ceil(2.5 * downsamp_rates[1]) / 2) * 2
+        kernel_penalty_t1 = np.int32(np.ceil(2.5 * downsamp_rates[2] * downsamp_rates[0]) / 2) * 2
+
+        dwi_patch_size = int(np.ceil(target_patch_size * downsamp_rates[0])) + kernel_penalty_diff
+        t1w_patch_size = int(np.round(target_patch_size * downsamp_rates[0] * downsamp_rates[2]) + kernel_penalty_t1)
+        mask_patch_size = int(np.ceil(target_patch_size * downsamp_rates[0]))
+
+        diff_input = Input(shape=(dwi_patch_size, dwi_patch_size, dwi_patch_size, diff_channel_size),
+                           name='dmri_input')
+
+        mask_input = Input(shape=(mask_patch_size, mask_patch_size, mask_patch_size, 1),
+                           name='mask_input')
+
+        t1w_input = Input((t1w_patch_size, t1w_patch_size, t1w_patch_size, 1), name='t1_weighted_input')
+
+        model_inputs = [diff_input, t1w_input, mask_input]
+
+        if ("dti" in train_preprocessors) or ("map" in train_preprocessors):
+            bvals_input = Input((diff_channel_size, 1), name='b_value_input')
+            bvecs_input = Input((diff_channel_size, 3), name='b_vector_input')
+
+            model_inputs += [bvals_input, bvecs_input]
+
+        if "normalize_dti" in train_preprocessors:
+            t1_metrics_input = Input(shape=(2,), name='t1_metrics_input')
+            model_inputs += [t1_metrics_input]
+
+        if ("normalize_map" in train_preprocessors):
+            t1_metrics_input = Input(shape=(2,), name='t1_metrics_input')
+            map_metrics_input = Input(shape=(2,), name='map_metrics_input')
+            model_inputs += [t1_metrics_input, map_metrics_input]
+
+        preproc_outputs = [diff_input, diff_input, t1w_input, mask_input]
+
+        for preproc_step in train_preprocessors:
+
+            match preproc_step:
+
+                case "dynamic_rescale":
+
+                    sampler_layer = RandomSamplerLayer(max_hr_downsamp=downsamp_rates[0],
+                                                       max_lr_downsamp=downsamp_rates[1],
+                                                       t1_init_downsamp=downsamp_rates[2],
+                                                       individual_resampling=individual_resampling,
+                                                       augment=augment,
+                                                       target_shape=(target_patch_size,
+                                                                     target_patch_size,
+                                                                     target_patch_size))
+
+                    preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
+
+                case "static_rate_rescale":
+
+                    sampler_layer = SameRateSamplerLayer(max_hr_downsamp=downsamp_rates[0],
+                                                         downsamp_rate=downsamp_rates[1]/downsamp_rates[0],
+                                                         t1_init_downsamp=downsamp_rates[2],
+                                                         individual_resampling=individual_resampling,
+                                                         augment=augment,
+                                                         target_shape=(target_patch_size,
+                                                                       target_patch_size,
+                                                                       target_patch_size))
+
+                    preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
+
+                case "list_rescale":
+
+                    sampler_layer = ListSamplerLayer(hr_downsamp_rates=[1.0],
+                                                     lr_downsamp_rates=[1.25, 1.5, 2.0, 2.5],
+                                                     t1_init_downsamp=downsamp_rates[2],
+                                                     individual_resampling=individual_resampling,
+                                                     augment=augment,
+                                                     target_shape=(target_patch_size,
+                                                                   target_patch_size,
+                                                                   target_patch_size))
+
+                    preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
+
+                case "dti":
+
+                    lr_dti_layer = DTIFitLayer(diff_channel_size)
+                    hr_dti_layer = DTIFitLayer(diff_channel_size)
+
+                    preproc_outputs = [lr_dti_layer([preproc_outputs[0], bvals_input, bvecs_input]),
+                                       hr_dti_layer([preproc_outputs[1], bvals_input, bvecs_input]),
+                                       preproc_outputs[2],
+                                       preproc_outputs[3]]
+
+                    diff_recon_ch_size = lr_dti_layer.output_shape[-1]
+
+                case "map":
+
+                    lr_map_layer = MAPMRIFitLayer(diff_channel_size, herm_order=4)
+                    hr_map_layer = MAPMRIFitLayer(diff_channel_size, herm_order=4)
+
+                    preproc_outputs = [lr_map_layer([preproc_outputs[0], bvals_input, bvecs_input]),
+                                       hr_map_layer([preproc_outputs[1], bvals_input, bvecs_input]),
+                                       preproc_outputs[2],
+                                       preproc_outputs[3]]
+
+                    diff_recon_ch_size = lr_map_layer.output_shape[-1]
+
+                case "normalize_dti":
+
+                    dti_norm_layer_lr = MinMaxNormLayer(predet_min=[0, -2e-3, -2e-3, 0, -2e-3, 0],
+                                                        predet_max=[2e-3, 2e-3, 2e-3, 2e-3, 2e-3, 2e-3],
+                                                        name='lr_norm_layer')
+
+                    dti_norm_layer_hr = MinMaxNormLayer(predet_min=[0, -2e-3, -2e-3, 0, -2e-3, 0],
+                                                        predet_max=[2e-3, 2e-3, 2e-3, 2e-3, 2e-3, 2e-3],
+                                                        name='hr_norm_layer')
+
+                    t1_norm_layer = MinMaxNormLayer(name='t1_norm_layer')
+
+                    preproc_outputs = [dti_norm_layer_lr([preproc_outputs[0], preproc_outputs[3]]),
+                                       dti_norm_layer_hr([preproc_outputs[1], preproc_outputs[3]]),
+                                       t1_norm_layer([preproc_outputs[2], preproc_outputs[3], t1_metrics_input]),
+                                       preproc_outputs[3]]
+
+                case "normalize_map":
+
+                    map_norm_layer_lr = MinMaxNormLayer(name='lr_norm')
+                    map_norm_layer_hr = MinMaxNormLayer(name='hr_norm')
+                    t1_norm_layer = MinMaxNormLayer(name='t1_norm')
+
+                    preproc_outputs = [map_norm_layer_lr([preproc_outputs[0], preproc_outputs[3], map_metrics_input]),
+                                       map_norm_layer_hr([preproc_outputs[1], preproc_outputs[3], map_metrics_input]),
+                                       t1_norm_layer([preproc_outputs[2], preproc_outputs[3], t1_metrics_input]),
+                                       preproc_outputs[3]]
+
+                case _:
+                    continue
+
+        lr_patch = preproc_outputs[0]
+        hr_patch = preproc_outputs[1]
+        t1_patch = preproc_outputs[2]
+
+    else:
+        lr_patch = Input((target_patch_size,
+                          target_patch_size,
+                          target_patch_size, diff_channel_size), name='lowres_input')
+
+        t1_patch = Input((target_patch_size,
+                          target_patch_size,
+                          target_patch_size, 1), name='t1_output')
 
     match model_type:
 
         case "UNet-T1":
-            model = unet3d_t1_v2(patch_size, t1_patch_size)
+            model = [unet3d_t1_v2(lr_patch, t1_patch, diff_ch_size=diff_recon_ch_size)]
 
         case "UNet-PreFusion":
-            model = unet3d_pre_fusion_v2(patch_size, t1_patch_size)
+            model = [unet3d_pre_fusion_v2(lr_patch, t1_patch, diff_ch_size=diff_recon_ch_size)]
 
         case "UNet":
-            model = unet3d_not1_v2(patch_size)
+            model = [unet3d_not1_v2(lr_patch, diff_ch_size=diff_recon_ch_size)]
+
+        case "UNet-Attention":
+            model = [unet3d_t1_attention(lr_patch, t1_patch, diff_ch_size=diff_recon_ch_size)]
+
+        case "Identity":
+            model = [lr_patch]
 
         case _:
             raise ValueError(f"No model configuration for \"{model_type}\" found!")
 
+    if train_preprocessors is not None and len(train_preprocessors) > 0:
+        model += [lr_patch, hr_patch, t1_patch]
+
+        model = keras.Model(model_inputs, model)
+
+    else:
+        model = keras.Model([lr_patch, t1_patch], model[0])
+
     if weights_dir is not None:
         model.load_weights(weights_dir)
 
+    keras.utils.plot_model(model, show_shapes=True, expand_nested=True)
+
     return model
-
-
-def simple_generator(input_ch, output_ch, ipatch_size=11, f_num=50, layer_num=1, ds=2):
-    input_layer = Input(shape=[ipatch_size, ipatch_size, ipatch_size, input_ch], name='input')
-
-    model = Sequential()
-
-    model.add(Conv3D(kernel_size=(3, 3, 3), filters=f_num, padding='valid'))
-    model.add(ReLU())
-
-    for n in range(layer_num):
-
-        if n == 0:
-            k = 1
-        else:
-            # fn = 2*f_num
-            k = 3
-
-        model.add(Conv3D(kernel_size=(k, k, k), filters=2 * f_num, padding='valid'))
-        model.add(ReLU())
-
-    model.add(Conv3D(kernel_size=(3, 3, 3), filters=output_ch, padding='valid'))
-
-    return keras.Model(input_layer, model(input_layer))
 
 
 def basic_model(ipatch_size: int):
@@ -92,317 +244,176 @@ def vdsr(ipatch_size: int | Tuple[int, int, int]):
     return keras.Model(input_layer, output)
 
 
-def calc_output(input_dim, filter_size, padding=0, stride=1):
-    return (input_dim - filter_size + 2 * padding) / stride + 1
+def unet3d_t1_v2(i_layer, t1_layer, diff_ch_size=6):
 
-
-def vdsr_t1(ipatch_size: int | Tuple[int, int, int],
-            t1_patch_size: int | Tuple[int, int, int]):
-    if type(ipatch_size) is int:
-        (x_size, y_size, z_size) = (ipatch_size, ipatch_size, ipatch_size)
-    else:
-        (x_size, y_size, z_size) = ipatch_size
-
-    input_layer = Input(shape=[x_size, y_size, z_size, 6], name='input')
-
-    t1_layer = Input(shape=[t1_patch_size, t1_patch_size, t1_patch_size, 1], name='t1_input')
-
-    model = Sequential(layers=[Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                               ReLU(),
-                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                               ReLU(),
-                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                               ReLU(),
-                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                               ReLU(),
-                               Conv3D(kernel_size=(3, 3, 3), filters=64, padding='same'),
-                               ReLU(),
-                               Conv3D(kernel_size=(3, 3, 3), filters=6, padding='same')])
-
-    seq = []
-
-    ksize = 5
-
-    t1_size = t1_patch_size
-
-    while t1_size > ipatch_size:
-        fsize = 64 if calc_output(t1_size, filter_size=ksize) > ipatch_size else 6
-
-        seq.append(Conv3D(kernel_size=ksize, filters=fsize, padding='valid'))
-        seq.append(ReLU())
-        t1_size = calc_output(t1_size, filter_size=ksize)
-
-    model_t1 = Sequential(seq)
-
-    output = input_layer + tanh(model(input_layer)) + tanh(model_t1(t1_layer))
-
-    return keras.Model([input_layer, t1_layer], output)
-
-
-def unet3d(ipatch_size):
-
-    i_layer = Input(shape=[ipatch_size,
-                           ipatch_size,
-                           ipatch_size, 6], name='input')
-
-    t1_layer = Input(shape=[ipatch_size * 2,
-                            ipatch_size * 2,
-                            ipatch_size * 2, 1], name='input_t1')
-
-    conv_input = Sequential([Conv3D(kernel_size=5, filters=6*4, padding='same'),
-                             ReLU(),
-                             Conv3D(kernel_size=5, filters=6*4, padding='same'),
-                             ReLU()])(i_layer)
-
-    d_layer = unet_downsample_layer(conv_input, kernel_size=5, filter_size=6 * 6 * 6)
-    d_layer2 = unet_downsample_layer(d_layer, kernel_size=5, filter_size=6 * 6 * 6 * 6)
-
-    u_layer1 = unet_upsample_layer(d_layer2, concat_layer=d_layer, filter_size=6 * 6 * 6, kernel_size=5)
-    u_layer2 = unet_upsample_layer(u_layer1, concat_layer=conv_input, filter_size=6 * 6, kernel_size=5)
-
-    o_layer = Conv3D(kernel_size=5, filters=6, padding='same')(u_layer2)
-
-    return keras.Model([i_layer, t1_layer], o_layer)
-
-
-def unet3d_t1_v1(ipatch_size,
-                 tw_patch_size=None):
-
-    i_layer = KL.Input(shape=[ipatch_size,
-                              ipatch_size,
-                              ipatch_size, 6], name='input', dtype=tf.float32)
-
-    __tw_patch_size = 2 * ipatch_size if tw_patch_size is None else tw_patch_size
-
-    t1_layer = KL.Input(shape=[__tw_patch_size,
-                               __tw_patch_size,
-                               __tw_patch_size, 1], name='input_t1', dtype=tf.float32)
-
-    conv_input = Sequential([Conv3D(kernel_size=5, filters=6 * 8, padding='same'),
-                             ReLU(),
-                             Conv3D(kernel_size=5, filters=6 * 8, padding='same'),
-                             ReLU()])(i_layer)
-
-    t1_input = Sequential([Conv3D(kernel_size=5,
-                                  strides=(2 if tw_patch_size is None else 1),  # Do not apply stride on custom T1 sizes
-                                  filters=6 * 8, padding='same'),
-                           ReLU(),
-                           Conv3D(kernel_size=5, filters=6 * 8, padding='same'),
-                           ReLU()])(t1_layer)
-
-    t1_d_layer1 = unet_downsample_layer(t1_input, kernel_size=5, filter_size=6 * 8 * 8)
-    t1_d_layer2 = unet_downsample_layer(t1_d_layer1, kernel_size=5, filter_size=6 * 8 * 8 * 8)
-
-    d_layer1 = unet_downsample_layer(conv_input, kernel_size=5, filter_size=6 * 8 * 8)
-    d_layer2 = unet_downsample_layer(d_layer1, kernel_size=5, filter_size=6 * 8 * 8 * 8)
-
-    d_layer_n = Conv3D(kernel_size=3, filters=6 * 8 * 8 * 8, padding='same')(t1_d_layer2 + d_layer2)
-
-    u_layer1 = unet_upsample_layer(d_layer_n,
-                                   concat_layer=Conv3D(kernel_size=3, filters=6 * 8 * 8, padding='same')
-                                   (t1_d_layer1 + d_layer1),
-                                   filter_size=6 * 8 * 8, kernel_size=5)
-    u_layer2 = unet_upsample_layer(u_layer1,
-                                   concat_layer=Conv3D(kernel_size=3, filters=6 * 8, padding='same')
-                                   (t1_input + conv_input),
-                                   filter_size=6 * 8, kernel_size=5)
-
-    o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(u_layer2)
-
-    return keras.Model([i_layer, t1_layer], o_layer)
-
-
-def unet3d_t1_v2(ipatch_size,
-                 tw_patch_size=None):
-
-    i_layer = KL.Input(shape=[ipatch_size,
-                              ipatch_size,
-                              ipatch_size, 6], name='input', dtype=tf.float32)
-
-    __tw_patch_size = 2 * ipatch_size if tw_patch_size is None else tw_patch_size
-
-    t1_layer = KL.Input(shape=[__tw_patch_size,
-                               __tw_patch_size,
-                               __tw_patch_size, 1], name='input_t1', dtype=tf.float32)
-
-    conv_input = Sequential([Conv3D(kernel_size=5, filters=6 * 6, padding='same'),
+    conv_input = Sequential([Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same'),
                              LeakyReLU(),
-                             Conv3D(kernel_size=5, filters=6 * 6, padding='same')])(i_layer)
+                             Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same'),
+                             LeakyReLU()])(i_layer)
 
-    t1_input = Sequential([Conv3D(kernel_size=5,
-                                  strides=(2 if tw_patch_size is None else 1),  # Do not apply stride on custom T1 sizes
-                                  filters=6 * 6, padding='same'),
+    t1_input = Sequential([Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same'),
                            LeakyReLU(),
-                           Conv3D(kernel_size=5, filters=6 * 6, padding='same')])(t1_layer)
+                           Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same'),
+                           LeakyReLU()])(t1_layer)
 
-    t1_d_layer1 = unet_downsample_layer_v2(LeakyReLU()(t1_input), kernel_size=5, filter_size=6 * 6 * 6)
-    t1_d_layer2 = unet_downsample_layer_v2(LeakyReLU()(t1_d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
+    t1_d_layer1 = unet_downsample_layer_v2(t1_input,
+                                           kernel_size=3, filter_size=diff_ch_size * 4 * 4)
+    t1_d_layer2 = unet_downsample_layer_v2(t1_d_layer1,
+                                           kernel_size=3, filter_size=diff_ch_size * 4 * 4 * 4,
+                                           last_layer=True)
 
-    d_layer1 = unet_downsample_layer_v2(LeakyReLU()(conv_input), kernel_size=5, filter_size=6 * 6 * 6)
-    d_layer2 = unet_downsample_layer_v2(LeakyReLU()(d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
-
-    d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(LeakyReLU()(t1_d_layer2 + d_layer2))
-
-    u_layer1 = unet_upsample_layer_v2(d_layer_n,
-                                      concat_layer=concatenate([d_layer1, t1_d_layer1], axis=4),
-                                      filter_size=6 * 6 * 6, kernel_size=5)
-    u_layer2 = unet_upsample_layer_v2(u_layer1,
-                                      concat_layer=concatenate([conv_input, t1_input], axis=4),
-                                      filter_size=6 * 6, kernel_size=5)
-
-    o_layer = LeakyReLU()(u_layer2)
-
-    o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(o_layer)
-
-    o_layer = tanh(o_layer) + i_layer
-
-    return keras.Model([i_layer, t1_layer], o_layer, name='UNet-T1')
-
-
-def unet3d_pre_fusion_v2(ipatch_size, t1_patch_size):
-
-    i_layer = KL.Input(shape=[ipatch_size,
-                              ipatch_size,
-                              ipatch_size, 6], name='input', dtype=tf.float32)
-
-    t1_layer = KL.Input(shape=[t1_patch_size,
-                               t1_patch_size,
-                               t1_patch_size, 1], name='input_t1', dtype=tf.float32)
-
-    conv_input = Sequential([Conv3D(kernel_size=5, filters=6 * 6, padding='same'),
-                             LeakyReLU(),
-                             Conv3D(kernel_size=5, filters=6 * 6, padding='same')])(i_layer)
-
-    t1_input = Sequential([Conv3D(kernel_size=5, filters=1 * 6, padding='same'),
-                           LeakyReLU(),
-                           Conv3D(kernel_size=5, filters=1 * 6, padding='same')])(t1_layer)
-
-    model_input = Concatenate(axis=4)([conv_input, t1_input])
-
-    d_layer1 = unet_downsample_layer_v2(LeakyReLU()(model_input), kernel_size=5, filter_size=7 * 6 * 6)
-    d_layer2 = unet_downsample_layer_v2(LeakyReLU()(d_layer1), kernel_size=5, filter_size=7 * 6 * 6 * 6)
-
-    d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(LeakyReLU()(d_layer2))
+    d_layer1 = unet_downsample_layer_v2(conv_input,
+                                        kernel_size=3, filter_size=diff_ch_size * 4 * 4)
+    d_layer2 = unet_downsample_layer_v2(d_layer1,
+                                        kernel_size=3, filter_size=diff_ch_size * 4 * 4 * 4,
+                                        last_layer=True)
 
     d_layer_n = Sequential([LeakyReLU(),
-                            Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same'),
+                            Conv3D(kernel_size=3, filters=diff_ch_size * 4 * 4 * 4, padding='same'),
                             LeakyReLU(),
-                            Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')
-                            ])(d_layer_n)
+                            BatchNormalization()])(
+        Average()([t1_d_layer2, d_layer2]))
 
     u_layer1 = unet_upsample_layer_v2(d_layer_n,
-                                      concat_layer=d_layer1,
-                                      filter_size=6 * 6 * 6, kernel_size=5)
+                                      concat_layer=[d_layer1, t1_d_layer1],
+                                      filter_size=diff_ch_size * 4 * 4, kernel_size=3)
     u_layer2 = unet_upsample_layer_v2(u_layer1,
-                                      concat_layer=model_input,
-                                      filter_size=6 * 6, kernel_size=5)
+                                      concat_layer=[conv_input, t1_input],
+                                      filter_size=diff_ch_size * 4, kernel_size=3)
 
-    o_layer = LeakyReLU()(u_layer2)
+    o_layer = Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same')(u_layer2)
+    o_layer = LeakyReLU()(o_layer)
 
-    o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(o_layer)
+    o_layer = Conv3D(kernel_size=1, filters=diff_ch_size, padding='same', activation=sigmoid,
+                     dtype=tf.float32)(o_layer)
 
-    o_layer = tanh(o_layer) + i_layer
+    # o_layer = o_layer + i_layer
 
-    return keras.Model([i_layer, t1_layer], o_layer, name='UNet-NoT1')
-
-
-def unet3d_not1_v2(ipatch_size):
-
-    i_layer = KL.Input(shape=[ipatch_size,
-                                        ipatch_size,
-                                        ipatch_size, 6], name='input', dtype=tf.float32)
-
-    __tw_patch_size = ipatch_size
-
-    t1_layer = KL.Input(shape=[__tw_patch_size,
-                               __tw_patch_size,
-                               __tw_patch_size, 1], name='input_t1', dtype=tf.float32) # T1 input disconnected
-
-    conv_input = Sequential([Conv3D(kernel_size=5, filters=6 * 6, padding='same'),
-                             LeakyReLU(),
-                             Conv3D(kernel_size=5, filters=6 * 6, padding='same')])(i_layer)
-
-    d_layer1 = unet_downsample_layer_v2(LeakyReLU()(conv_input), kernel_size=5, filter_size=6 * 6 * 6)
-    d_layer2 = unet_downsample_layer_v2(LeakyReLU()(d_layer1), kernel_size=5, filter_size=6 * 6 * 6 * 6)
-
-    d_layer_n = Conv3D(kernel_size=3, filters=6 * 6 * 6 * 6, padding='same')(LeakyReLU()(d_layer2))
-
-    u_layer1 = unet_upsample_layer_v2(d_layer_n,
-                                      concat_layer=d_layer1,
-                                      filter_size=6 * 6 * 6, kernel_size=5)
-    u_layer2 = unet_upsample_layer_v2(u_layer1,
-                                      concat_layer=conv_input,
-                                      filter_size=6 * 6, kernel_size=5)
-
-    o_layer = LeakyReLU()(u_layer2)
-
-    o_layer = Conv3D(kernel_size=5, filters=6, padding='same', dtype=tf.float32)(o_layer)
-
-    o_layer = tanh(o_layer) + i_layer
-
-    return keras.Model([i_layer, t1_layer], o_layer, name='UNet-NoT1')
+    return o_layer
 
 
-def unet3d_t1_v3(ipatch_size,
-                 tw_patch_size=None,
-                 num_layers=3,
-                 ch_mult_per_layer=4,
-                 num_rep_layers=2):
+def unet3d_t1_attention(i_layer, t1_layer, diff_ch_size=6):
 
-    i_layer = KL.Input(shape=[ipatch_size,
-                              ipatch_size,
-                              ipatch_size, 6], name='input', dtype=tf.float32)
-
-    __tw_patch_size = 2 * ipatch_size if tw_patch_size is None else tw_patch_size
-
-    t1_layer = KL.Input(shape=[__tw_patch_size,
-                               __tw_patch_size,
-                               __tw_patch_size, 1], name='input_t1', dtype=tf.float32)
-
-    conv_input = Sequential([Conv3D(kernel_size=3, filters=6 * (ch_mult_per_layer ** 1), padding='same'),
+    conv_input = Sequential([Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same'),
                              ELU(),
-                             Conv3D(kernel_size=3, filters=6 * (ch_mult_per_layer ** 1), padding='same')])(i_layer)
+                             Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same'),
+                             ELU(),])(i_layer)
 
-    t1_input = Sequential([Conv3D(kernel_size=3,
-                                  strides=(2 if tw_patch_size is None else 1),  # Do not apply stride on custom T1 sizes
-                                  filters=6 * (ch_mult_per_layer ** 1), padding='same'),
+    t1_input = Sequential([Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same'),
                            ELU(),
-                           Conv3D(kernel_size=3, filters=6 * ch_mult_per_layer ** 1, padding='same')])(t1_layer)
+                           Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same'),
+                           ELU(),])(t1_layer)
 
-    t1_layers = []
-    d_layers = []
+    t1_d_layer1 = unet_downsample_layer_v3(t1_input,
+                                           kernel_size=3, filter_size=diff_ch_size * 4 ** 2)
+    t1_d_layer2 = unet_downsample_layer_v3(t1_d_layer1,
+                                           kernel_size=3, filter_size=diff_ch_size * 4 ** 3)
+    t1_d_layer3 = unet_downsample_layer_v3(t1_d_layer2,
+                                           kernel_size=3, filter_size=diff_ch_size * 4 ** 4)
 
-    t1_layers.append(t1_input)
-    d_layers.append(conv_input)
+    d_layer1 = unet_downsample_layer_v3(conv_input,
+                                        kernel_size=3, filter_size=diff_ch_size * 4 ** 2)
+    d_layer2 = unet_downsample_layer_v3(d_layer1,
+                                        kernel_size=3, filter_size=diff_ch_size * 4 ** 3)
+    d_layer3 = unet_downsample_layer_v3(d_layer2,
+                                        kernel_size=3, filter_size=diff_ch_size * 4 ** 4)
 
-    for n in range(1, num_layers+1):
-        t1_layers.append(unet_downsample_layer_v3(ELU()(t1_layers[-1]),
-                                                  kernel_size=3,
-                                                  filter_size=6 * (ch_mult_per_layer ** (n+1)),
-                                                  rep_layers=num_rep_layers))
-        d_layers.append(unet_downsample_layer_v3(ELU()(d_layers[-1]),
-                                                 kernel_size=3,
-                                                 filter_size=6 * (ch_mult_per_layer ** (n+1)),
-                                                 rep_layers=num_rep_layers))
+    # d_layer_n = Sequential(
+    #     [BatchNormalization(),
+    #      ELU(),
+    #      Conv3D(kernel_size=3, filters=6 * 2 ** 4, padding='same')]
+    # )(Average()([t1_d_layer3, d_layer3]))
 
-    d_layer_n = (d_layers[-1] + t1_layers[-1])
+    d_layer_n = BasicTransformerBlock(d_layer3.shape)([d_layer3, t1_d_layer3])
+    d_layer_n = BatchNormalization()(ELU()(d_layer_n))
 
-    for _ in range(num_rep_layers):
-        d_layer_n = Conv3D(kernel_size=3,
-                           filters=6 * (ch_mult_per_layer ** (num_layers + 1)),
-                           padding='same')(ELU()(d_layer_n))
+    u_layer1 = unet_attention_fusion(d_layer_n,
+                                     concat_layer=d_layer2,
+                                     attention_layer=t1_d_layer2,
+                                     filter_size=6 * 4 ** 3)
 
-    for n in range(1, num_layers+1):
-        d_layer_n = unet_upsample_layer_v3(d_layer_n,
-                                           concat_layer=concatenate([d_layers[-1-n], t1_layers[-1-n]], axis=4),
-                                           filter_size=6 * (ch_mult_per_layer ** (num_layers - n + 1)),
-                                           kernel_size=3,
-                                           rep_layers=num_rep_layers)
+    u_layer2 = unet_attention_fusion(u_layer1,
+                                     concat_layer=d_layer1,
+                                     attention_layer=t1_d_layer1,
+                                     filter_size=6 * 4 ** 2)
+    u_layer3 = unet_attention_fusion(u_layer2,
+                                     concat_layer=conv_input,
+                                     attention_layer=t1_input,
+                                     filter_size=6 * 4 ** 1)
 
-    o_layer = ELU()(d_layer_n)
+    o_layer = Sequential([Conv3D(kernel_size=3, filters=6 * 4, padding='same'),
+                          ELU(),
+                          Conv3D(kernel_size=1, filters=6, padding='same',
+                                 dtype=tf.float32,
+                                 activation=sigmoid)])(u_layer3)
 
-    o_layer = Conv3D(kernel_size=3, filters=6, padding='same', dtype=tf.float32)(o_layer)
+    return o_layer
 
-    o_layer = tanh(o_layer) + i_layer
 
-    return keras.Model([i_layer, t1_layer], o_layer, name='UNet-T1')
+def unet3d_pre_fusion_v2(i_layer, t1_layer, diff_ch_size=6):
+
+    conv_input = Sequential([Conv3D(kernel_size=3, filters=(diff_ch_size + 1) * 4, padding='same'),
+                             LeakyReLU(),
+                             Conv3D(kernel_size=3, filters=(diff_ch_size + 1) * 4, padding='same'),
+                             LeakyReLU()])(Concatenate(axis=4)([i_layer, t1_layer]))
+
+    d_layer1 = unet_downsample_layer_v2(conv_input,
+                                        kernel_size=3, filter_size=(diff_ch_size + 1) * 4 * 4)
+    d_layer2 = unet_downsample_layer_v2(d_layer1,
+                                        kernel_size=3, filter_size=(diff_ch_size + 1) * 4 * 4 * 4,
+                                        last_layer=True)
+
+    d_layer_n = Sequential([LeakyReLU(),
+                            Conv3D(kernel_size=3, filters=(diff_ch_size + 1) * 4 * 4 * 4, padding='same'),
+                            LeakyReLU(),
+                            BatchNormalization()])(d_layer2)
+
+    u_layer1 = unet_upsample_layer_v2(d_layer_n,
+                                      concat_layer=[d_layer1],
+                                      filter_size=(diff_ch_size + 1) * 4 * 4, kernel_size=3)
+    u_layer2 = unet_upsample_layer_v2(u_layer1,
+                                      concat_layer=[conv_input],
+                                      filter_size=(diff_ch_size + 1) * 4, kernel_size=3)
+
+    o_layer = Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same')(u_layer2)
+    o_layer = LeakyReLU()(o_layer)
+
+    o_layer = Conv3D(kernel_size=1, filters=diff_ch_size, padding='same', activation=sigmoid,
+                     dtype=tf.float32)(o_layer)
+
+    return o_layer
+
+
+def unet3d_not1_v2(i_layer, diff_ch_size=6):
+
+    conv_input = Sequential([Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same'),
+                             LeakyReLU(),
+                             Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same'),
+                             LeakyReLU()])(i_layer)
+
+    d_layer1 = unet_downsample_layer_v2(conv_input,
+                                        kernel_size=3, filter_size=diff_ch_size * 4 * 4)
+    d_layer2 = unet_downsample_layer_v2(d_layer1,
+                                        kernel_size=3, filter_size=diff_ch_size * 4 * 4 * 4,
+                                        last_layer=True)
+
+    d_layer_n = Sequential([LeakyReLU(),
+                            Conv3D(kernel_size=3, filters=diff_ch_size * 4 * 4 * 4, padding='same'),
+                            LeakyReLU(),
+                            BatchNormalization()])(d_layer2)
+
+    u_layer1 = unet_upsample_layer_v2(d_layer_n,
+                                      concat_layer=[d_layer1],
+                                      filter_size=diff_ch_size * 4 * 4, kernel_size=3)
+    u_layer2 = unet_upsample_layer_v2(u_layer1,
+                                      concat_layer=[conv_input],
+                                      filter_size=diff_ch_size * 4, kernel_size=3)
+
+    o_layer = Conv3D(kernel_size=3, filters=diff_ch_size * 4, padding='same')(u_layer2)
+    o_layer = LeakyReLU()(o_layer)
+
+    o_layer = Conv3D(kernel_size=1, filters=diff_ch_size, padding='same', activation=sigmoid,
+                     dtype=tf.float32)(o_layer)
+
+    return o_layer
+
