@@ -1159,9 +1159,6 @@ class ListSamplerLayer(SamplerLayer):
         self.hr_downsamp_rates = hr_downsamp_rates
         self.lr_downsamp_rates = lr_downsamp_rates
 
-        self.log_probs_hr = tf.math.log([[1 / len(self.hr_downsamp_rates)] * len(self.hr_downsamp_rates)])
-        self.log_probs_lr = tf.math.log([[1 / len(self.lr_downsamp_rates)] * len(self.lr_downsamp_rates)])
-
     def get_config(self):
         config = super().get_config()
 
@@ -1182,23 +1179,29 @@ class ListSamplerLayer(SamplerLayer):
         if not bool(inputs_hr.shape[0]):  # If batch is none just return target shape.
             hr_downsamp_rate = tf.ones((batch_shape, 3)) * self.max_hr_downsamp
         elif self.individual_resampling:
-            indices = tf.transpose(tf.random.categorical(self.log_probs_hr, batch_shape)) * [1, 1, 1]
+            indices = rand_gen.uniform([batch_shape, 1],
+                                       0, len(self.hr_downsamp_rates),
+                                       dtype=tf.int32) * tf.ones([3], dtype=tf.int32)
             hr_downsamp_rate = tf.gather(self.hr_downsamp_rates, indices)
 
         else:
-            indices = tf.transpose(tf.random.categorical(self.log_probs_hr, 1)) * tf.ones([batch_shape, 3],
-                                                                                          dtype=tf.int64)
+            indices = rand_gen.uniform([1, 1],
+                                       0, len(self.hr_downsamp_rates),
+                                       dtype=tf.int32) * tf.ones([batch_shape, 3], dtype=tf.int32)
             hr_downsamp_rate = tf.gather(self.hr_downsamp_rates, indices)
 
         if not bool(inputs_lr.shape[0]):  # If batch is none just return target shape.
             lr_downsamp_rate = tf.ones((batch_shape, 3)) * self.max_lr_downsamp
         elif self.individual_resampling:
-            indices = tf.transpose(tf.random.categorical(self.log_probs_lr, batch_shape)) * [1, 1, 1]
+            indices = rand_gen.uniform([batch_shape, 1],
+                                       0, len(self.lr_downsamp_rates),
+                                       dtype=tf.int32) * tf.ones([3], dtype=tf.int32)
             lr_downsamp_rate = tf.gather(self.lr_downsamp_rates, indices)
 
         else:
-            indices = tf.transpose(tf.random.categorical(self.log_probs_lr, 1)) * tf.ones([batch_shape, 3],
-                                                                                          dtype=tf.int64)
+            indices = rand_gen.uniform([1, 1],
+                                       0, len(self.lr_downsamp_rates),
+                                       dtype=tf.int32) * tf.ones([batch_shape, 3], dtype=tf.int32)
             lr_downsamp_rate = tf.gather(self.lr_downsamp_rates, indices)
 
         return super().call([inputs_lr, inputs_hr, inputs_t1, inputs_mask,
