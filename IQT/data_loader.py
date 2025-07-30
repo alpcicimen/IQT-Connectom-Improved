@@ -39,7 +39,10 @@ class DWISequence(keras.utils.Sequence):
 
         for (s, subj) in enumerate(self.subject_labels):
 
-            subj_pairs = len(os.listdir(os.path.join(self.pairs_dir, subj, "dwi")))
+            subdir = "combined" if self.compress_mode else "dwi"
+
+            subj_pairs = len(os.listdir(os.path.join(self.pairs_dir, subj,
+                                                     subdir)))
                 # if self.pairs_per_subject is None \
                 # else self.pairs_per_subject
 
@@ -49,7 +52,9 @@ class DWISequence(keras.utils.Sequence):
             self.__total_patches += subj_pairs
 
             patch_indices: NDArray[str] = np.stack((np.repeat(s, subj_pairs),
-                                                   choices(os.listdir(os.path.join(self.pairs_dir, subj, "dwi")),
+                                                   choices(os.listdir(os.path.join(self.pairs_dir,
+                                                                                   subj,
+                                                                                   subdir)),
                                                            k=subj_pairs)), dtype=str, axis=-1)
 
             run_indices.append(patch_indices)
@@ -75,6 +80,7 @@ class DWISequence(keras.utils.Sequence):
                  t1_to_diff_ratio=1.,
                  shuffle_indices=True,
                  cluster_mode=False,
+                 compress_mode=False,
                  dwis_subdir='Raw',
                  dwis_filename="data",
                  mask_filename="nodif_brain_mask",
@@ -89,6 +95,8 @@ class DWISequence(keras.utils.Sequence):
 
         self.subject_labels = subject_labels
         self.batch_size = batch_size
+
+        self.compress_mode = compress_mode
 
         self.pairs_per_subject = pairs_per_subject
 
@@ -111,6 +119,7 @@ class DWISequence(keras.utils.Sequence):
             if cluster_mode:
                 print("Current subject: ", subject_label)
 
+            combined_path = os.path.join(pairs_dir, subject_label, "combined")
             t1w_path = os.path.join(pairs_dir, subject_label, "t1w")
             dwi_path = os.path.join(pairs_dir, subject_label, "dwi")
             mask_path = os.path.join(pairs_dir, subject_label, "mask")
@@ -124,14 +133,18 @@ class DWISequence(keras.utils.Sequence):
 
             if make_dataset:
 
-                if not os.path.exists(t1w_path):
-                    os.makedirs(t1w_path)
+                if self.compress_mode and not os.path.exists(combined_path):
+                    os.makedirs(combined_path)
 
-                if not os.path.exists(dwi_path):
-                    os.makedirs(dwi_path)
+                else:
+                    if not os.path.exists(t1w_path):
+                        os.makedirs(t1w_path)
 
-                if not os.path.exists(mask_path):
-                    os.makedirs(mask_path)
+                    if not os.path.exists(dwi_path):
+                        os.makedirs(dwi_path)
+
+                    if not os.path.exists(mask_path):
+                        os.makedirs(mask_path)
 
                 if not os.path.exists(misc_path):
                     os.makedirs(misc_path)
@@ -267,9 +280,16 @@ class DWISequence(keras.utils.Sequence):
                     assert mask_patch.shape == (mask_patch_size, mask_patch_size, mask_patch_size)
                     assert dwis_patch.shape[:-1] == (dwi_base_patch_size, dwi_base_patch_size, dwi_base_patch_size)
 
-                    np.save(os.path.join(dwi_path, f"{p}"), dwis_patch, allow_pickle=False)
-                    np.save(os.path.join(t1w_path, f"{p}"), t1_patch, allow_pickle=False)
-                    np.save(os.path.join(mask_path, f"{p}"), mask_patch, allow_pickle=False)
+                    if self.compress_mode:
+                        np.savez_compressed(os.path.join(combined_path, f"{p}"),
+                                            mask=mask_patch,
+                                            dwi=dwis_patch,
+                                            t1=t1_patch)
+
+                    else:
+                        np.save(os.path.join(dwi_path, f"{p}"), dwis_patch, allow_pickle=False)
+                        np.save(os.path.join(t1w_path, f"{p}"), t1_patch, allow_pickle=False)
+                        np.save(os.path.join(mask_path, f"{p}"), mask_patch, allow_pickle=False)
 
             else:
 
@@ -279,6 +299,26 @@ class DWISequence(keras.utils.Sequence):
                 self.all_bvecs.append(grads[..., 1:])
 
                 self.t1_metrics.append(np.load(os.path.join(misc_path, "t1_minmax.npy")))
+
+        if compress_mode:
+            def loader_func(subj, patch_indx):
+
+                subj_patch = np.load(os.path.join(self.pairs_dir,
+                                                  self.subject_labels[int(subj)],
+                                                  "combined",
+                                                  patch_indx))
+
+                return subj_patch['dwi'], subj_patch['t1'], subj_patch['mask']
+        else:
+            def loader_func(subj, patch_indx):
+
+                dwi_patch = np.load(os.path.join(self.pairs_dir, self.subject_labels[int(subj)], "dwi", patch_indx))
+                t1_patch = np.load(os.path.join(self.pairs_dir, self.subject_labels[int(subj)], "t1w", patch_indx))
+                mask_patch = np.load(os.path.join(self.pairs_dir, self.subject_labels[int(subj)], "mask", patch_indx))
+
+                return dwi_patch, t1_patch, mask_patch
+
+        self.__loader_func__ = loader_func
 
         if cluster_mode:
             print(f"Time taken to generate patches: {time.time() - cur_time} seconds")
@@ -305,9 +345,8 @@ class DWISequence(keras.utils.Sequence):
             map_metrics = []
 
         for (subj, patch_indx) in self.__run_indices[index:min(self.__total_patches, index + self.batch_size)]:
-            dwi_patch = np.load(os.path.join(self.pairs_dir, self.subject_labels[int(subj)], "dwi", patch_indx))
-            t1_patch = np.load(os.path.join(self.pairs_dir, self.subject_labels[int(subj)], "t1w", patch_indx))
-            mask_patch = np.load(os.path.join(self.pairs_dir, self.subject_labels[int(subj)], "mask", patch_indx))
+
+            dwi_patch, t1_patch, mask_patch = self.__loader_func__(subj, patch_indx)
 
             dwi_patches.append(dwi_patch)
             t1_patches.append(t1_patch)
