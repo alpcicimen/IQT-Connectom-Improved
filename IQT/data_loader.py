@@ -79,8 +79,9 @@ class DWISequence(keras.utils.Sequence):
                  max_downsamp_rate=3.,
                  t1_to_diff_ratio=1.,
                  shuffle_indices=True,
+                 enable_blur=True,
                  cluster_mode=False,
-                 compress_mode=False,
+                 compress_mode=True,
                  dwis_subdir='Raw',
                  dwis_filename="data",
                  mask_filename="nodif_brain_mask",
@@ -129,7 +130,7 @@ class DWISequence(keras.utils.Sequence):
                 map_metric = np.array(pd.read_csv(os.path.join(map_metric_dir, f"{subject_label}.csv"),
                                                   header=None))[0]
 
-                self.map_metrics.append(map_metric)
+                self.map_metrics.append(np.float32(map_metric))
 
             if make_dataset:
 
@@ -179,7 +180,7 @@ class DWISequence(keras.utils.Sequence):
                 t1_metric = np.array([np.percentile(subject_data_t1_base[mask_t1], 2),
                                       np.percentile(subject_data_t1_base[mask_t1], 98)])
 
-                self.t1_metrics.append(t1_metric)
+                self.t1_metrics.append(np.float32(t1_metric))
 
                 mask = np.array(zoom(mask_t1,
                                      zoom=(1 / t1_downsample_rate[0],
@@ -187,20 +188,20 @@ class DWISequence(keras.utils.Sequence):
                                            1 / t1_downsample_rate[2]),
                                      order=0, prefilter=False), dtype=bool)
 
-                self.all_bvals.append(valid_bvals)
-                self.all_bvecs.append(valid_bvecs)
+                self.all_bvals.append(np.float32(valid_bvals))
+                self.all_bvecs.append(np.float32(valid_bvecs))
 
                 np.save(os.path.join(misc_path, f"grads"),
-                        np.concatenate([valid_bvals, valid_bvecs], axis=-1),
+                        np.concatenate([valid_bvals, valid_bvecs], axis=-1, dtype=np.float32),
                         allow_pickle=True)
 
-                t1_base_patch_size = int(np.round(target_patch_size * t1_to_diff_ratio * max_target_downsamp)) + \
-                    np.int32(np.ceil(2.5 * t1_to_diff_ratio * max_target_downsamp) / 2) * 2
+                t1_base_patch_size = np.int32(np.round(target_patch_size * t1_to_diff_ratio * max_target_downsamp))
+                dwi_base_patch_size = np.int32(np.round(target_patch_size * max_target_downsamp))
+                mask_patch_size = np.int32(np.round(target_patch_size * max_target_downsamp))
 
-                dwi_base_patch_size = int(np.round(target_patch_size * max_target_downsamp)) + \
-                    np.int32(np.ceil(2.5 * max_downsamp_rate) / 2) * 2
-
-                mask_patch_size = int(np.round(target_patch_size * max_target_downsamp))
+                if enable_blur:
+                    t1_base_patch_size += np.int32(np.ceil(2.5 * t1_to_diff_ratio * max_target_downsamp) / 2) * 2
+                    dwi_base_patch_size += np.int32(np.ceil(2.5 * max_downsamp_rate) / 2) * 2
 
                 valid_dwis = np.pad(valid_dwis,
                                     pad_width=np.array([[dwi_base_patch_size // 2, dwi_base_patch_size // 2],
@@ -232,7 +233,7 @@ class DWISequence(keras.utils.Sequence):
 
                 sel_mask_indices = np.array(np.where(sel_mask_indices & mask)).T
 
-                np.save(os.path.join(misc_path, f"t1_minmax"), t1_metric, allow_pickle=True)
+                np.save(os.path.join(misc_path, f"t1_minmax"), np.float32(t1_metric), allow_pickle=True)
 
                 for p, (i, j, k) in enumerate(tqdm(sel_mask_indices, disable=cluster_mode)):
 

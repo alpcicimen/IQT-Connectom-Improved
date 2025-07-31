@@ -12,6 +12,8 @@ from .layers import *
 def config_model(model_type,
                  target_patch_size=16,
                  downsamp_rates: Sequence[float, float, float] = (1.6, 3.0, 1.25 / 0.7),
+                 static_lr=False,
+                 static_hr=False,
                  diff_channel_size=6,
                  train_preprocessors: None | List[Literal["dti",
                                                           "map",
@@ -22,19 +24,20 @@ def config_model(model_type,
                                                           "normalize_dti"]] = None,
                  individual_resampling=True,
                  augment=True,
+                 blur=True,
                  weights_dir: None | str | os.PathLike[str] = None):
 
     diff_recon_ch_size = diff_channel_size  # Placeholder
 
     if train_preprocessors is not None and len(train_preprocessors) > 0:
 
-        kernel_penalty_diff = np.int32(np.ceil(2.5 * downsamp_rates[1]) / 2) * 2
-        kernel_penalty_t1 = np.int32(np.ceil(2.5 * downsamp_rates[2] * downsamp_rates[0]) / 2) * 2
+        kernel_penalty_diff = np.int32(np.ceil(2.5 * downsamp_rates[1]) / 2) * 2 if blur else 0
+        kernel_penalty_t1 = np.int32(np.ceil(2.5 * downsamp_rates[2] * downsamp_rates[0]) / 2) * 2 if blur else 0
 
         if "rescale" in "".join(train_preprocessors):
-            dwi_patch_size = int(np.ceil(target_patch_size * downsamp_rates[0])) + kernel_penalty_diff
+            dwi_patch_size = int(np.round(target_patch_size * downsamp_rates[0])) + kernel_penalty_diff
             t1w_patch_size = int(np.round(target_patch_size * downsamp_rates[0] * downsamp_rates[2]) + kernel_penalty_t1)
-            mask_patch_size = int(np.ceil(target_patch_size * downsamp_rates[0]))
+            mask_patch_size = int(np.round(target_patch_size * downsamp_rates[0]))
 
         else:
             (dwi_patch_size,
@@ -79,11 +82,15 @@ def config_model(model_type,
                     sampler_layer = RandomSamplerLayer(max_hr_downsamp=downsamp_rates[0],
                                                        max_lr_downsamp=downsamp_rates[1],
                                                        t1_init_downsamp=downsamp_rates[2],
+                                                       static_hr=static_hr,
+                                                       static_lr=static_lr,
                                                        individual_resampling=individual_resampling,
                                                        augment=augment,
+                                                       apply_blurring=blur,
                                                        target_shape=(target_patch_size,
                                                                      target_patch_size,
-                                                                     target_patch_size))
+                                                                     target_patch_size),
+                                                       trainable=False)
 
                     preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
@@ -92,31 +99,36 @@ def config_model(model_type,
                     sampler_layer = SameRateSamplerLayer(max_hr_downsamp=downsamp_rates[0],
                                                          downsamp_rate=downsamp_rates[1]/downsamp_rates[0],
                                                          t1_init_downsamp=downsamp_rates[2],
+                                                         static=(static_lr | static_hr),
                                                          individual_resampling=individual_resampling,
                                                          augment=augment,
+                                                         apply_blurring=blur,
                                                          target_shape=(target_patch_size,
                                                                        target_patch_size,
-                                                                       target_patch_size))
+                                                                       target_patch_size),
+                                                         trainable=False)
 
                     preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
                 case "list_rescale":
 
-                    sampler_layer = ListSamplerLayer(hr_downsamp_rates=[downsamp_rates[0]],
-                                                     lr_downsamp_rates=[1.25, 1.5, 2.0, 2.5],
+                    sampler_layer = ListSamplerLayer(hr_downsamp_rates=[1.6],
+                                                     lr_downsamp_rates=[2.56],
                                                      t1_init_downsamp=downsamp_rates[2],
                                                      individual_resampling=individual_resampling,
                                                      augment=augment,
+                                                     apply_blurring=blur,
                                                      target_shape=(target_patch_size,
                                                                    target_patch_size,
-                                                                   target_patch_size))
+                                                                   target_patch_size),
+                                                     trainable=False)
 
                     preproc_outputs = sampler_layer([preproc_outputs[0], preproc_outputs[2], preproc_outputs[3]])
 
                 case "dti":
 
-                    lr_dti_layer = DTIFitLayer(diff_channel_size)
-                    hr_dti_layer = DTIFitLayer(diff_channel_size)
+                    lr_dti_layer = DTIFitLayer(diff_channel_size, trainable=False)
+                    hr_dti_layer = DTIFitLayer(diff_channel_size, trainable=False)
 
                     preproc_outputs = [lr_dti_layer([preproc_outputs[0], bvals_input, bvecs_input]),
                                        hr_dti_layer([preproc_outputs[1], bvals_input, bvecs_input]),
@@ -127,8 +139,8 @@ def config_model(model_type,
 
                 case "map":
 
-                    lr_map_layer = MAPMRIFitLayer(diff_channel_size, herm_order=4)
-                    hr_map_layer = MAPMRIFitLayer(diff_channel_size, herm_order=4)
+                    lr_map_layer = MAPMRIFitLayer(diff_channel_size, herm_order=4, trainable=False)
+                    hr_map_layer = MAPMRIFitLayer(diff_channel_size, herm_order=4, trainable=False)
 
                     preproc_outputs = [lr_map_layer([preproc_outputs[0], bvals_input, bvecs_input]),
                                        hr_map_layer([preproc_outputs[1], bvals_input, bvecs_input]),
@@ -141,13 +153,13 @@ def config_model(model_type,
 
                     dti_norm_layer_lr = MinMaxNormLayer(predet_min=[0, -2e-3, -2e-3, 0, -2e-3, 0],
                                                         predet_max=[2e-3, 2e-3, 2e-3, 2e-3, 2e-3, 2e-3],
-                                                        name='lr_norm_layer')
+                                                        name='lr_norm_layer', trainable=False)
 
                     dti_norm_layer_hr = MinMaxNormLayer(predet_min=[0, -2e-3, -2e-3, 0, -2e-3, 0],
                                                         predet_max=[2e-3, 2e-3, 2e-3, 2e-3, 2e-3, 2e-3],
-                                                        name='hr_norm_layer')
+                                                        name='hr_norm_layer', trainable=False)
 
-                    t1_norm_layer = MinMaxNormLayer(name='t1_norm_layer')
+                    t1_norm_layer = MinMaxNormLayer(name='t1_norm_layer', trainable=False)
 
                     preproc_outputs = [dti_norm_layer_lr([preproc_outputs[0], preproc_outputs[3]]),
                                        dti_norm_layer_hr([preproc_outputs[1], preproc_outputs[3]]),
@@ -156,9 +168,9 @@ def config_model(model_type,
 
                 case "normalize_map":
 
-                    map_norm_layer_lr = MinMaxNormLayer(name='lr_norm')
-                    map_norm_layer_hr = MinMaxNormLayer(name='hr_norm')
-                    t1_norm_layer = MinMaxNormLayer(name='t1_norm')
+                    map_norm_layer_lr = MinMaxNormLayer(name='lr_norm', trainable=False)
+                    map_norm_layer_hr = MinMaxNormLayer(name='hr_norm', trainable=False)
+                    t1_norm_layer = MinMaxNormLayer(name='t1_norm', trainable=False)
 
                     preproc_outputs = [map_norm_layer_lr([preproc_outputs[0], preproc_outputs[3], map_metrics_input]),
                                        map_norm_layer_hr([preproc_outputs[1], preproc_outputs[3], map_metrics_input]),

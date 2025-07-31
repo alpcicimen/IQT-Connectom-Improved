@@ -15,6 +15,7 @@ global optim
 global loss_fn
 
 make_dataset = True
+blur = True
 
 
 def create_optim(lr,
@@ -113,6 +114,8 @@ def main(model_type,
          cluster_mode,
          preproc_steps,
          augment,
+         static_lr,
+         static_hr,
          individual_resampling,
          batch_size,
          lr,
@@ -127,11 +130,14 @@ def main(model_type,
     model = config_model(model_type,
                          target_patch_size=patch_size,
                          downsamp_rates=[hr_downsampling_max_rate, lr_downsampling_max_rate, t1_dwi_rate],
+                         static_lr=static_lr,
+                         static_hr=static_hr,
                          diff_channel_size=
                          108 if diffusion_model == 'dti'
                          else 288,
                          train_preprocessors=preproc_steps,
                          augment=augment,
+                         blur=blur,
                          individual_resampling=individual_resampling)
 
     loss_best = tf.Variable(tf.float32.max)
@@ -155,6 +161,7 @@ def main(model_type,
                             max_target_downsamp=hr_downsampling_max_rate,
                             max_downsamp_rate=lr_downsampling_max_rate,
                             t1_to_diff_ratio=t1_dwi_rate,
+                            enable_blur=blur,
                             cluster_mode=cluster_mode,
                             dwis_subdir=dwi_subdir,
                             dwis_filename=dwi_file_head,
@@ -179,6 +186,7 @@ def main(model_type,
                                  max_target_downsamp=hr_downsampling_max_rate,
                                  max_downsamp_rate=lr_downsampling_max_rate,
                                  t1_to_diff_ratio=t1_dwi_rate,
+                                 enable_blur=blur,
                                  cluster_mode=cluster_mode,
                                  dwis_subdir=dwi_subdir,
                                  dwis_filename=dwi_file_head,
@@ -354,6 +362,8 @@ if __name__ == '__main__':
                                  "normalize_dti"])
 
     parser.add_argument('--augment', type=bool, default=False)
+    parser.add_argument('--static_lr', type=bool, default=False)
+    parser.add_argument('--static_hr', type=bool, default=False)
     parser.add_argument('--individual_resampling', type=bool, default=False)
 
     parser.add_argument('--log_dir', type=str,

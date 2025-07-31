@@ -344,7 +344,7 @@ class MAPMRIFitLayer(Layer):
                     }
 
     @staticmethod
-    # @tf.function
+    @tf.function
     def hermite_basis(n, u, x):
         # tf.linalg.matmul(q_batch[..., 0, None], pqr_batch[:, None, ..., 0])
         # h = tf.linalg.matmul(n, x) * tf.constant([2.0 * np.pi], dtype=x.dtype) * u
@@ -528,12 +528,9 @@ class SamplingLayer(Layer):
 
             step_rate = (input_size - 1.) / (input_size / s_rate - 1.)
 
-            range_x = tf.cast(tf.linspace(-centre_point_output[0], centre_point_output[0],
-                                          end_shape[0]), dtype=self.dtype)
-            range_y = tf.cast(tf.linspace(-centre_point_output[1], centre_point_output[1],
-                                          end_shape[1]), dtype=self.dtype)
-            range_z = tf.cast(tf.linspace(-centre_point_output[2], centre_point_output[2],
-                                          end_shape[2]), dtype=self.dtype)
+            range_x = tf.linspace(-centre_point_output[0], centre_point_output[0], end_shape[0])
+            range_y = tf.linspace(-centre_point_output[1], centre_point_output[1], end_shape[1])
+            range_z = tf.linspace(-centre_point_output[2], centre_point_output[2], end_shape[2])
 
             igrid = tf.repeat(tf.stack(tf.meshgrid(range_x, range_y, range_z, indexing='ij'), axis=-1)[None, :],
                               tf.shape(s_rate)[0],
@@ -541,9 +538,7 @@ class SamplingLayer(Layer):
 
             igrid = tf.transpose(igrid, (1, 2, 3, 0, 4)) * step_rate
 
-            igrid = tf.clip_by_value(igrid,
-                                     -(input_size - 1.) / 2.,
-                                     (input_size - 1.) / 2.) + centre_point_input
+            igrid = tf.clip_by_value(igrid, -(input_size - 1.) / 2., (input_size - 1.) / 2.) + centre_point_input
 
             igrid = tf.transpose(igrid, (3, 0, 1, 2, 4))
 
@@ -668,7 +663,7 @@ class BlurLayer(Layer):
 
         self.channels = input_shape[0][-1]  # Initialize it here based on input channels
 
-        max_kernel_size = self.__max_kernel_size__
+        max_kernel_size = tf.convert_to_tensor(self.__max_kernel_size__, dtype=tf.int32)
 
         @tf.function
         def compute_blur_kernel(downsample_rate):
@@ -685,7 +680,7 @@ class BlurLayer(Layer):
 
             # Check Billot et al. for more details
             std_value = tf.convert_to_tensor(2 * np.log(10) / (2 * np.pi), dtype=self.dtype) * downsample_rate
-            kernel_size = tf.cast((tf.math.ceil(2.5 * downsample_rate) / 2), dtype=tf.uint32) * 2 + 1
+            kernel_size = tf.cast((tf.math.ceil(2.5 * downsample_rate) / 2), dtype=tf.int32) * 2 + 1
 
             # Create a kernel grid for generating the blurring kernel.
             # Grid should be of shape [K_i, K_i, K_i],
@@ -705,8 +700,7 @@ class BlurLayer(Layer):
             gaussian_kernel /= tf.reduce_sum(gaussian_kernel)
 
             # Our kernel is of shape K_i^3, but we need it to be the size of max_kernel_size. Therefore, we pad with zeros.
-            kernel_pads = tf.math.abs(tf.subtract(tf.convert_to_tensor(max_kernel_size, dtype=tf.int32),
-                                                  tf.cast(kernel_size, tf.int32)))
+            kernel_pads = tf.math.abs(max_kernel_size - kernel_size)
 
             paddings = tf.convert_to_tensor([[kernel_pads // 2, kernel_pads // 2],
                                              [kernel_pads // 2, kernel_pads // 2],
@@ -737,18 +731,15 @@ class BlurLayer(Layer):
     @tf.function
     def blur(self, input_tensor, blur_rate):
 
-        input_tensor_shape = input_tensor.shape
-
-        ret = tf.cond(tf.less_equal(blur_rate, self.blur_limit),  # Do not blur at certain rates
-                      lambda: input_tensor[
-                              :,
-                              self.__max_kernel_size__ // 2:input_tensor_shape[1] - self.__max_kernel_size__ // 2,
-                              self.__max_kernel_size__ // 2:input_tensor_shape[2] - self.__max_kernel_size__ // 2,
-                              self.__max_kernel_size__ // 2:input_tensor_shape[3] - self.__max_kernel_size__ // 2,
-                              :],
-                      lambda: tf.nn.convolution(input_tensor, self.__compute_blur_kernel__(blur_rate)))
-
-        return ret
+        if blur_rate <= self.blur_limit:
+            input_tensor_shape = input_tensor.shape
+            return input_tensor[:,
+                                self.__max_kernel_size__ // 2:input_tensor_shape[1] - self.__max_kernel_size__ // 2,
+                                self.__max_kernel_size__ // 2:input_tensor_shape[2] - self.__max_kernel_size__ // 2,
+                                self.__max_kernel_size__ // 2:input_tensor_shape[3] - self.__max_kernel_size__ // 2,
+                                :]
+        else:
+            return tf.nn.convolution(input_tensor, self.__compute_blur_kernel__(blur_rate))
 
     def call(self, inputs, *args, **kwargs):
 
@@ -940,7 +931,7 @@ class SamplerLayer(Layer):
                     inputs_t1 = self.t1_blurrer([inputs_t1, t1_downsamp_rate[0, 0]])
 
             inputs_t1 = self.t1_downsampler([inputs_t1,
-                                             tf.repeat(tf.cast(tf.shape(inputs_t1)[1:-1][None], dtype=self.dtype),
+                                             tf.repeat(tf.cast(tf.shape(inputs_t1)[1:-1], dtype=self.dtype)[None],
                                                        tf.shape(t1_downsamp_rate)[0], axis=0),
                                              t1_downsamp_rate,
                                              ])
