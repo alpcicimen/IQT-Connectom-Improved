@@ -71,7 +71,6 @@ class DWISequence(keras.utils.Sequence):
                  subject_labels,
                  pairs_dir,
                  make_dataset,
-                 batch_size,
                  pairs_per_subject=400,
                  target_patch_size=16,
                  patch_spacing=16,
@@ -95,7 +94,6 @@ class DWISequence(keras.utils.Sequence):
                  map_metric_dir: None | os.PathLike = None):
 
         self.subject_labels = subject_labels
-        self.batch_size = batch_size
 
         self.compress_mode = compress_mode
 
@@ -256,16 +254,15 @@ class DWISequence(keras.utils.Sequence):
                         k - mask_patch_size//2:k + int(np.ceil(mask_patch_size/2)),
                     ]
 
-                    i_dwi, j_dwi, k_dwi = np.array(
-                        np.round(np.array([i, j, k]) - mask_patch_size//2) + dwi_base_patch_size//2,
-                        dtype=int)
+                    i_dwi, j_dwi, k_dwi = np.array([i, j, k]) - mask_patch_size/2
 
-                    dwis_patch = valid_dwis[
-                        i_dwi - dwi_base_patch_size//2:i_dwi + dwi_base_patch_size//2,
-                        j_dwi - dwi_base_patch_size//2:j_dwi + dwi_base_patch_size//2,
-                        k_dwi - dwi_base_patch_size//2:k_dwi + dwi_base_patch_size//2,
-                        :
-                    ]
+                    dwis_grid = util.config_grid((i_dwi, j_dwi, k_dwi),
+                                                 (i_dwi + dwi_base_patch_size - 1,
+                        j_dwi + dwi_base_patch_size - 1,
+                                                  k_dwi + dwi_base_patch_size - 1),
+                                                 (dwi_base_patch_size, dwi_base_patch_size, dwi_base_patch_size))
+
+                    dwis_patch = util.gridded_interpolation(valid_dwis, dwis_grid)
 
                     i_t1, j_t1, k_t1 = (np.array([i, j, k]) - mask_patch_size/2) * t1_to_diff_ratio
 
@@ -328,49 +325,43 @@ class DWISequence(keras.utils.Sequence):
         return
 
     def __len__(self):
-        return ceil(self.__total_patches / self.batch_size)
+        return self.__total_patches
 
     def on_epoch_end(self):
         self.__run_indices = self.__get_indices__()
 
+    def output_signature(self):
+        samples = self[0]
+        return tuple([tf.TensorSpec.from_tensor(sample) for sample in samples])
+
     def __getitem__(self, index):
 
-        dwi_patches = []
-        t1_patches = []
-        mask_patches = []
-        bval_patches = []
-        bvec_patches = []
-        t1_metrics = []
+        subj, patch_indx = self.__run_indices[index]
+
+        dwi_patch, t1_patch, mask_patch = self.__loader_func__(subj, patch_indx)
+
+        bval_metric = self.all_bvals[int(subj)]
+        bvec_metric = self.all_bvecs[int(subj)]
+        t1_metric = self.t1_metrics[int(subj)]
+
+        ret = (tf.convert_to_tensor(dwi_patch),
+               tf.convert_to_tensor(t1_patch),
+               tf.convert_to_tensor(mask_patch),
+               tf.convert_to_tensor(bval_metric),
+               tf.convert_to_tensor(bvec_metric),
+               tf.convert_to_tensor(t1_metric))
 
         if self.map_metrics is not None:
-            map_metrics = []
-
-        for (subj, patch_indx) in self.__run_indices[index:min(self.__total_patches, index + self.batch_size)]:
-
-            dwi_patch, t1_patch, mask_patch = self.__loader_func__(subj, patch_indx)
-
-            dwi_patches.append(dwi_patch)
-            t1_patches.append(t1_patch)
-            mask_patches.append(mask_patch)
-
-            bval_patches.append(self.all_bvals[int(subj)])
-            bvec_patches.append(self.all_bvecs[int(subj)])
-            t1_metrics.append(self.t1_metrics[int(subj)])
-
-            if self.map_metrics is not None:
-                map_metrics.append(self.map_metrics[int(subj)])
-
-        ret = (tf.cast(tf.stack(dwi_patches), dtype=tf.float32),
-               tf.cast(tf.stack(t1_patches), dtype=tf.float32),
-               tf.cast(tf.stack(mask_patches), dtype=tf.float32),
-               tf.cast(tf.stack(bval_patches), dtype=tf.float32),
-               tf.cast(tf.stack(bvec_patches), dtype=tf.float32),
-               tf.cast(tf.stack(t1_metrics), dtype=tf.float32))
-
-        if self.map_metrics is not None:
-            ret += (tf.cast(tf.stack(map_metrics), dtype=tf.float32),)
+            ret += (tf.convert_to_tensor(self.map_metrics[int(subj)]),)
 
         return ret
+
+    def __call__(self):
+        for i in range(self.__len__()):
+            yield self.__getitem__(i)
+
+            if i == self.__len__() - 1:
+                self.on_epoch_end()
 
 
 class PairSequence(keras.utils.Sequence):

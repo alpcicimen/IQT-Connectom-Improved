@@ -150,27 +150,30 @@ def main(model_type,
     if make_dataset:
         print(f"Generating patch triplet library on: {scratch_dir}.\nGenerating training subjects...")
 
-    train_seq = DWISequence(diff_data_dir=dwi_data_dir,
-                            t1_data_dir=t1_data_dir,
-                            subject_labels=training_subjects,
-                            pairs_dir=os.path.join(scratch_dir, "training"),
-                            make_dataset=make_dataset,
-                            batch_size=batch_size,
-                            pairs_per_subject=pairs_per_subject,
-                            patch_spacing=patch_spacing,
-                            max_target_downsamp=hr_downsampling_max_rate,
-                            max_downsamp_rate=lr_downsampling_max_rate,
-                            t1_to_diff_ratio=t1_dwi_rate,
-                            enable_blur=blur,
-                            cluster_mode=cluster_mode,
-                            dwis_subdir=dwi_subdir,
-                            dwis_filename=dwi_file_head,
-                            t1_subdir=t1_subdir,
-                            t1_filename=t1_file_head,
-                            bval_limit=
-                            1200.0 if (diffusion_model == "dti") else 10000.0,  # This will include every acq
-                            b0_norm=(diffusion_model != "dti"),
-                            map_metric_dir=map_metric_dir)
+    training_seq = DWISequence(diff_data_dir=dwi_data_dir,
+                               t1_data_dir=t1_data_dir,
+                               subject_labels=training_subjects,
+                               pairs_dir=os.path.join(scratch_dir, "training"),
+                               make_dataset=make_dataset,
+                               pairs_per_subject=pairs_per_subject,
+                               patch_spacing=patch_spacing,
+                               max_target_downsamp=hr_downsampling_max_rate,
+                               max_downsamp_rate=lr_downsampling_max_rate,
+                               t1_to_diff_ratio=t1_dwi_rate,
+                               enable_blur=blur,
+                               cluster_mode=cluster_mode,
+                               dwis_subdir=dwi_subdir,
+                               dwis_filename=dwi_file_head,
+                               t1_subdir=t1_subdir,
+                               t1_filename=t1_file_head,
+                               bval_limit=
+                               1200.0 if (diffusion_model == "dti") else 10000.0,  # This will include every acq
+                               b0_norm=(diffusion_model != "dti"),
+                               map_metric_dir=map_metric_dir)
+
+    training_dataset = tf.data.Dataset.from_generator(training_seq,
+                                                      output_signature=training_seq.output_signature())
+    training_dataset = training_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
     if make_dataset:
         print("Generating validation subjects...")
@@ -180,7 +183,6 @@ def main(model_type,
                                  subject_labels=validation_subjects,
                                  pairs_dir=os.path.join(scratch_dir, "validation"),
                                  make_dataset=make_dataset,
-                                 batch_size=batch_size,
                                  pairs_per_subject=None,
                                  patch_spacing=patch_size,
                                  max_target_downsamp=hr_downsampling_max_rate,
@@ -197,14 +199,18 @@ def main(model_type,
                                  b0_norm=(diffusion_model != "dti"),
                                  map_metric_dir=map_metric_dir)
 
+    validation_dataset = tf.data.Dataset.from_generator(validation_seq,
+                                                        output_signature=validation_seq.output_signature())
+    validation_dataset = validation_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
     if make_dataset:
         print("Generated patch triplets.")
 
-    _lr = create_optim(lr, lr_decay, epochs, len(train_seq))
+    _lr = create_optim(lr, lr_decay, epochs, ceil(len(training_seq) / batch_size))
 
     summary_writer = tf.summary.create_file_writer(log_dir)
 
-    sample_patch = validation_seq[0]
+    sample_patch = tuple([val_entry[None, ...] for val_entry in validation_seq[0]])
 
 ########################################################################################################################
 
@@ -241,12 +247,14 @@ def main(model_type,
 
         with (summary_writer.as_default()):
             tf.summary.scalar('Loss rate at start',
-                              _lr if isinstance(_lr, float) else _lr(len(train_seq) * run + 1), step=run)
+                              _lr if isinstance(_lr, float)
+                              else _lr(ceil(len(training_seq)/batch_size) * run + 1),
+                              step=run)
 
         if cluster_mode:
             time_start = time.time()
 
-        for train_batch in tqdm(train_seq, disable=cluster_mode):
+        for train_batch in tqdm(training_dataset, disable=cluster_mode):
 
             (dwi_batch, t1_batch, mask_batch,  # Image data
              bval_batch, bvec_batch,  # dMRI gradient data
@@ -261,7 +269,7 @@ def main(model_type,
                                t1_metric_batch, dwi_metric_batch)
             train_loss += closs
 
-        for val_batch in tqdm(validation_seq, disable=cluster_mode):
+        for val_batch in tqdm(validation_dataset, disable=cluster_mode):
 
             (dwi_batch, t1_batch, mask_batch,  # Image data
              bval_batch, bvec_batch,  # dMRI gradient data
@@ -278,16 +286,19 @@ def main(model_type,
         if cluster_mode:
             print("Time taken for run {}: {} seconds.".format((run + 1), time.time() - time_start))
 
-        print(f"Run {run + 1} mean training loss: {train_loss / len(train_seq)}")
-        print(f"Run {run + 1} mean validation loss: {val_loss / len(validation_seq)}")
+        mean_training_loss = train_loss / ceil(len(training_seq) / batch_size)
+        mean_validation_loss = val_loss / ceil(len(validation_seq) / batch_size)
+
+        print(f"Run {run + 1} mean training loss: {mean_training_loss}")
+        print(f"Run {run + 1} mean validation loss: {mean_validation_loss}")
 
         sample_pred = model(sample_patch, training=False)
 
         (sample_o, sample_i, sample_t, sample_t1) = (sample_pred[0], sample_pred[1], sample_pred[2], sample_pred[3])
 
         with (summary_writer.as_default()):
-            tf.summary.scalar('Training Epoch Mean Loss', train_loss / len(train_seq), step=run)
-            tf.summary.scalar('Validation Epoch Mean Loss', val_loss / len(validation_seq), step=run)
+            tf.summary.scalar('Training Epoch Mean Loss', mean_training_loss, step=run)
+            tf.summary.scalar('Validation Epoch Mean Loss', mean_validation_loss, step=run)
 
             tf.summary.image('Model Output Slice',
                              (sample_o[None, 0, :, patch_size//2-1, :, 0, None] +
@@ -310,8 +321,6 @@ def main(model_type,
             tf.summary.image('Input T1w Slice',
                              sample_t1[None, 0, :, patch_size//2-1, :, 0, None],
                              step=run)
-
-        train_seq.on_epoch_end()  # There's no need to shuffle for validation so shuffle only training
 
         step.assign_add(1)
 
@@ -429,8 +438,8 @@ if __name__ == '__main__':
 
     #  Unfortunately bash does not natively support floating point operations, so a possible workaround would be to
     #  calculate the proper floating point before supplying it as a command-line argument.
-    parser.add_argument('--lr_downsampling_max_rate', type=float, default=2.5)
-    parser.add_argument('--hr_downsampling_max_rate', type=float, default=1.)
+    parser.add_argument('--lr_downsampling_max_rate', type=float, default=2.56)
+    parser.add_argument('--hr_downsampling_max_rate', type=float, default=1.6)
     parser.add_argument('--t1_dwi_rate', type=float, default=1.25/0.7)
 
     # parser.add_argument('--clip_strategy', type=str, default='constant')
